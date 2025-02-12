@@ -26,8 +26,13 @@ func main() {
 	assetId, _ := hex.DecodeString("8e781dedad7dfdccc0e5f05dea48c0245766952c44246a752e13d19df7affa34")
 	ammt := 1
 
-	client := taponark.Init_client()
-	addr, err := client.GetBoardingAddress(userPubKey, serverPubKey, uint32(lockBlockHeight), assetId, uint64(ammt))
+	arkScript, err := taponark.CreateBoardingArkScript(userPubKey, serverPubKey, uint32(lockBlockHeight))
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	client := taponark.InitTapClient()
+	addr, err := client.GetBoardingAddress(arkScript.Branch, assetId, uint64(ammt))
 
 	if err != nil {
 		log.Fatal("error", err)
