@@ -74,7 +74,7 @@ func CreateBoardingArkScript(user, server *btcec.PublicKey, locktime uint32) (Bo
 	return BoardingArkScript{Left: leftLeaf, Right: rightLeaf, Branch: branch}, nil
 }
 
-func createBoardingArkScript(
+func CreateBoardingArkAssetScript(
 	user, server *btcec.PublicKey, locktime uint32) BoardingArkAssetScript {
 
 	userBoardingNonceOpt := musig2.WithPublicKey(

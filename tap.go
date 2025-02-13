@@ -14,6 +14,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
 	"github.com/btcsuite/btcd/btcutil/psbt"
+	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
@@ -136,7 +137,7 @@ func (cl *TapClient) GetNextKeys() (asset.ScriptKey,
 }
 
 func (cl *TapClient) IncomingTransferEvent(addr *taprpc.Addr) {
-	err := wait.NoError(func() error {
+	_ = wait.NoError(func() error {
 		resp, err := cl.client.AddrReceives(
 			context.TODO(), &taprpc.AddrReceivesRequest{
 				FilterAddr: addr.Encoded,
@@ -159,11 +160,11 @@ func (cl *TapClient) IncomingTransferEvent(addr *taprpc.Addr) {
 		log.Println("Got address event ")
 
 		return nil
-	}, time.Minute*3)
+	}, time.Minute)
 
-	if err != nil {
-		log.Fatal("cannot fetch address event")
-	}
+	// if err != nil {
+	// 	log.Fatal("cannot fetch address event")
+	// }
 }
 
 func (cl *TapClient) createMuSig2Session(
@@ -247,6 +248,7 @@ func (cl *TapClient) CommitVirtualPsbts(
 	request := &assetwalletrpc.CommitVirtualPsbtsRequest{
 		AnchorPsbt: buf.Bytes(),
 		Fees: &assetwalletrpc.CommitVirtualPsbtsRequest_SatPerVbyte{
+			// TODO: Verify this
 			SatPerVbyte: uint64(5 / 1000),
 		},
 	}
@@ -415,7 +417,7 @@ func (cl *TapClient) partialSignBtcTransfer(pkt *psbt.Packet, inputIndex uint32,
 	// participant, we'll get the correct signatures for OP_CHECKSIGADD.
 	signInput := &pkt.Inputs[inputIndex]
 	derivation, trDerivation := tappsbt.Bip32DerivationFromKeyDesc(
-		key, params.HDCoinType,
+		key, chaincfg.RegressionNetParams.HDCoinType,
 	)
 	trDerivation.LeafHashes = [][]byte{fn.ByteSlice(tapLeaf.TapHash())}
 	signInput.Bip32Derivation = []*psbt.Bip32Derivation{derivation}
@@ -467,7 +469,7 @@ func (cl *TapClient) createAssetPartialSig(assetTransferPacket *tappsbt.VPacket,
 	derivation, trDerivation := tappsbt.Bip32DerivationFromKeyDesc(
 		keychain.KeyDescriptor{
 			PubKey: localScriptKeyDescriptor.PubKey,
-		}, params.HDCoinType,
+		}, chaincfg.RegressionNetParams.HDCoinType,
 	)
 	vIn.Bip32Derivation = []*psbt.Bip32Derivation{derivation}
 	vIn.TaprootBip32Derivation = []*psbt.TaprootBip32Derivation{
