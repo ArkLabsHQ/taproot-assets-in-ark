@@ -249,7 +249,7 @@ func (cl *TapClient) CommitVirtualPsbts(
 		AnchorPsbt: buf.Bytes(),
 		Fees: &assetwalletrpc.CommitVirtualPsbtsRequest_SatPerVbyte{
 			// TODO: Verify this
-			SatPerVbyte: uint64(5 / 1000),
+			SatPerVbyte: uint64(2000 / 1000),
 		},
 	}
 
@@ -453,7 +453,7 @@ func (cl *TapClient) partialSignBtcTransfer(pkt *psbt.Packet, inputIndex uint32,
 	return result.Inputs[inputIndex].TaprootScriptSpendSig[0].Signature
 }
 
-func (cl *TapClient) createAssetPartialSig(assetTransferPacket *tappsbt.VPacket, assetLeaf *txscript.TapLeaf, localScriptKeyDescriptor keychain.KeyDescriptor,
+func (cl *TapClient) partialSignAssetTransfer(assetTransferPacket *tappsbt.VPacket, assetLeaf *txscript.TapLeaf, localScriptKeyDescriptor keychain.KeyDescriptor,
 	localNonces *musig2.Nonces, remoteScriptKey *secp256k1.PublicKey, remoteNonce [66]byte) ([]byte, []byte) {
 	sessID := cl.createMuSig2Session(localScriptKeyDescriptor, remoteScriptKey.SerializeCompressed(), *localNonces,
 		[][]byte{remoteNonce[:]},
@@ -464,6 +464,8 @@ func (cl *TapClient) createAssetPartialSig(assetTransferPacket *tappsbt.VPacket,
 		lnd:        &cl.lndClient,
 		leafToSign: *assetLeaf,
 	}
+
+	fmt.Printf("%+v\n", assetTransferPacket.Inputs)
 
 	vIn := assetTransferPacket.Inputs[0]
 	derivation, trDerivation := tappsbt.Bip32DerivationFromKeyDesc(

@@ -55,7 +55,7 @@ func RunBoardingAndSpend() {
 	currentBlockHeight := 300
 	lockBlockHeight := currentBlockHeight + 4320
 
-	assetId, _ := hex.DecodeString("6dbd61f7bf08e753113b85c81ca01d38d05a24d9d5cd94ecee079a1770253039")
+	assetId, _ := hex.DecodeString("7d8a7fe5d768f53d286c399350412e857e0014481a8fb8faf10bc62b31e736fc")
 	ammt := 10
 
 	userLndClient := InitLndClient(userLndRpcHostPort, userLndRpcPort, userLndTLSCert, userLndMacaroon)
@@ -72,7 +72,7 @@ func RunBoardingAndSpend() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	arkAssetScript := CreateBoardingArkAssetScript(userScriptKey.PubKey, serverScriptKey.PubKey, uint32(lockBlockHeight))
+	arkAssetScript := CreateBoardingArkAssetScript(userScriptKey.RawKey.PubKey, serverScriptKey.RawKey.PubKey, uint32(lockBlockHeight))
 
 	addr, err := serverTapClient.GetBoardingAddress(arkScript.Branch, arkAssetScript.tapScriptKey, assetId, uint64(ammt))
 
@@ -135,13 +135,13 @@ func RunBoardingAndSpend() {
 
 	log.Println("created spend fund Virtual PSBT")
 	fundedSpendPkt := deserializeVPacket(spendFundResp.FundedPsbt)
-	_, userSessionId := userTapClient.createAssetPartialSig(fundedSpendPkt,
-		&arkAssetScript.leaves[0], userScriptKey.RawKey, arkAssetScript.userNonce, serverScriptKey.PubKey, arkAssetScript.serverNonce.PubNonce)
+	_, userSessionId := userTapClient.partialSignAssetTransfer(fundedSpendPkt,
+		&arkAssetScript.leaves[0], userScriptKey.RawKey, arkAssetScript.userNonce, serverScriptKey.RawKey.PubKey, arkAssetScript.serverNonce.PubNonce)
 
 	log.Println("created asset partial sig for user")
 
-	serverPartialSig, _ := serverTapClient.createAssetPartialSig(fundedSpendPkt,
-		&arkAssetScript.leaves[0], serverScriptKey.RawKey, arkAssetScript.serverNonce, userScriptKey.PubKey, arkAssetScript.userNonce.PubNonce)
+	serverPartialSig, _ := serverTapClient.partialSignAssetTransfer(fundedSpendPkt,
+		&arkAssetScript.leaves[0], serverScriptKey.RawKey, arkAssetScript.serverNonce, userScriptKey.RawKey.PubKey, arkAssetScript.userNonce.PubNonce)
 
 	log.Println("created asset partial for server")
 
