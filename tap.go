@@ -13,6 +13,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/txscript"
@@ -23,10 +24,10 @@ import (
 	"github.com/lightninglabs/taproot-assets/commitment"
 	"github.com/lightninglabs/taproot-assets/fn"
 	"github.com/lightninglabs/taproot-assets/proof"
-	"github.com/lightninglabs/taproot-assets/tapfreighter"
 	"github.com/lightninglabs/taproot-assets/tappsbt"
 	"github.com/lightninglabs/taproot-assets/taprpc"
 	"github.com/lightninglabs/taproot-assets/taprpc/assetwalletrpc"
+	"github.com/lightninglabs/taproot-assets/tapscript"
 	"github.com/lightninglabs/taproot-assets/tapsend"
 
 	"github.com/lightningnetwork/lnd/keychain"
@@ -99,6 +100,14 @@ func (cl *TapClient) GetBoardingAddress(scriptBranch txscript.TapBranch, assetSc
 	})
 
 	return addr, nil
+}
+
+func (cl *TapClient) SendAsset(addr *taprpc.Addr) (*taprpc.SendAssetResponse, error) {
+	return cl.client.SendAsset(
+		context.TODO(), &taprpc.SendAssetRequest{
+			TapAddrs: []string{addr.Encoded},
+		},
+	)
 }
 
 func (cl *TapClient) GetNextKeys() (asset.ScriptKey,
@@ -213,7 +222,7 @@ func (cl *TapClient) combineSigs(sessID,
 	)
 
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Cannot combine signature %v", err)
 	}
 
 	for _, leaf := range tree.LeafMerkleProofs {
@@ -224,7 +233,7 @@ func (cl *TapClient) combineSigs(sessID,
 
 	controlBlockBytes, err := controlBlock.ToBytes()
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Cannot Get control byte %v", err)
 	}
 
 	commitmentWitness := make(wire.TxWitness, 3)
@@ -235,6 +244,7 @@ func (cl *TapClient) combineSigs(sessID,
 	return commitmentWitness
 }
 
+// Note: Commits Outputs pkscripts
 func (cl *TapClient) CommitVirtualPsbts(
 	packet *psbt.Packet, activePackets []*tappsbt.VPacket,
 	passivePackets []*tappsbt.VPacket,
@@ -480,6 +490,7 @@ func (cl *TapClient) partialSignAssetTransfer(assetTransferPacket *tappsbt.VPack
 		trDerivation,
 	}
 
+	// Note: This also adds Split Commitment Root to Split Asset
 	err := tapsend.SignVirtualTransaction(
 		assetTransferPacket, partialSigner, partialSigner,
 	)
@@ -509,52 +520,6 @@ func (cl *TapClient) partialSignAssetTransfer(assetTransferPacket *tappsbt.VPack
 	partialSig := newAsset.PrevWitnesses[0].TxWitness[0][32:]
 
 	return partialSig, sessID
-}
-
-func (cl *TapClient) createFundedVPacket(vPkt *tappsbt.VPacket, anchoredCommitment tapfreighter.AnchoredCommitment, anchoredCommitmentProof proof.Proof) *tapfreighter.FundedVPacket {
-	// Each anchor output must have a valid set of AltLeaves at this point.
-	outputAltLeaves := make(map[uint32][]asset.AltLeaf[asset.Asset])
-	for _, vOut := range vPkt.Outputs {
-		outputAltLeaves[vOut.AnchorOutputIndex] = append(
-			outputAltLeaves[vOut.AnchorOutputIndex],
-			asset.CopyAltLeaves(vOut.AltLeaves)...,
-		)
-	}
-
-	for anchorIdx, leaves := range outputAltLeaves {
-		err := asset.ValidAltLeaves(leaves)
-		if err != nil {
-			log.Fatalf("anchor output %d invalid alt "+
-				"leaves: %w", anchorIdx, err)
-		}
-	}
-
-	vPkt.Inputs = make([]*tappsbt.VInput, 1)
-	inputCommitments := make(tappsbt.InputCommitments)
-	assetInput := anchoredCommitment
-	inputProof := anchoredCommitmentProof
-
-	// Create the virtual packet input including the chain anchor
-	// information.
-	err := createAndSetInput(
-		vPkt, 0, &assetInput, &inputProof,
-	)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	prevID := vPkt.Inputs[0].PrevID
-	inputCommitments[prevID] = assetInput.Commitment
-
-	if err := tapsend.PrepareOutputAssets(context.TODO(), vPkt); err != nil {
-		log.Fatalf("unable to prepare outputs: %w", err)
-	}
-
-	return &tapfreighter.FundedVPacket{
-		VPacket:          vPkt,
-		InputCommitments: inputCommitments,
-	}
-
 }
 
 func NewBasicConn(tapdHost string, tapdPort string, tlsPath, macPath string) (*grpc.ClientConn, error) {
@@ -690,113 +655,56 @@ func (m *muSig2PartialSigner) Execute(*asset.Asset, []*commitment.SplitAsset,
 	return nil
 }
 
-// TODO (Joshua) Kindly verify the effect of this function
 // createAndSetInput creates a virtual packet input for the given asset input
 // and sets it on the given virtual packet.
 func createAndSetInput(vPkt *tappsbt.VPacket, idx int,
-	assetInput *tapfreighter.AnchoredCommitment,
-	inputProof *proof.Proof) error {
-
-	internalKey := assetInput.InternalKey
-	derivation, trDerivation := tappsbt.Bip32DerivationFromKeyDesc(
-		internalKey, chaincfg.RegressionNetParams.HDCoinType,
-	)
-
-	anchorPkScript, anchorMerkleRoot, _, err := tapsend.AnchorOutputScript(
-		internalKey.PubKey, assetInput.TapscriptSibling,
-		assetInput.Commitment,
-	)
-	if err != nil {
-		return fmt.Errorf("cannot calculate input asset pk script: %w",
-			err)
-	}
-
-	// Check if this is the anchorPkScript (and indirectly the
-	// anchorMerkleRoot) we expect. If not this might be a non-V2
-	// commitment.
-	anchorTxOut := inputProof.AnchorTx.TxOut[assetInput.AnchorPoint.Index]
-	if !bytes.Equal(anchorTxOut.PkScript, anchorPkScript) {
-		var err error
-
-		inputCommitment, err := assetInput.Commitment.Downgrade()
-		if err != nil {
-			return fmt.Errorf("cannot downgrade commitment: %w",
-				err)
-		}
-
-		//nolint:lll
-		anchorPkScript, anchorMerkleRoot, _, err = tapsend.AnchorOutputScript(
-			internalKey.PubKey, assetInput.TapscriptSibling,
-			inputCommitment,
-		)
-		if err != nil {
-			return fmt.Errorf("cannot calculate input asset "+
-				"pkScript for commitment V0: %w", err)
-		}
-
-		if !bytes.Equal(anchorTxOut.PkScript, anchorPkScript) {
-			// This matches neither version.
-			return fmt.Errorf("%w: anchor input script "+
-				"mismatch for anchor outpoint %v",
-				tapsend.ErrInvalidAnchorInputInfo,
-				assetInput.AnchorPoint)
-		}
-	}
-
-	// Add some trace logging for easier debugging of what we expect to be
-	// in the commitment we spend (we did the same when creating the output,
-	// so differences should be apparent when debugging).
-	tapsend.LogCommitment(
-		"Input", idx, assetInput.Commitment, internalKey.PubKey,
-		anchorPkScript, anchorMerkleRoot[:],
-	)
-
-	//nolint:lll
-	tapscriptSiblingBytes, _, err := commitment.MaybeEncodeTapscriptPreimage(
-		assetInput.TapscriptSibling,
-	)
-	if err != nil {
-		return fmt.Errorf("cannot encode tapscript sibling: %w", err)
-	}
+	roundDetails *taprpc.TransferOutput, assetId []byte) error {
 
 	// At this point, we have a valid "coin" to spend in the commitment, so
 	// we'll add the relevant information to the virtual TX's input.
-	prevID := asset.PrevID{
-		OutPoint: assetInput.AnchorPoint,
-		ID:       assetInput.Asset.ID(),
-		ScriptKey: asset.ToSerialized(
-			assetInput.Asset.ScriptKey.PubKey,
-		),
+	outpoint, err := wire.NewOutPointFromString(roundDetails.Anchor.Outpoint)
+	if err != nil {
+		log.Fatalf("cannot decode outpoint %w", err)
 	}
+
+	proof, err := proof.Decode(roundDetails.NewProofBlob)
+	if err != nil {
+		log.Fatalf("cannot decode proof %w", err)
+	}
+
+	internalKey, err := secp256k1.ParsePubKey(roundDetails.Anchor.InternalKey)
+	if err != nil {
+		log.Fatalf("cannot parse Pubkey %w", err)
+	}
+
+	tapKey := txscript.ComputeTaprootOutputKey(internalKey, roundDetails.Anchor.MerkleRoot)
+	outputScript, err := tapscript.PayToTaprootScript(tapKey)
+	if err != nil {
+		log.Fatalf("cannot get TaprootScript %w", err)
+	}
+
+	prevID := asset.PrevID{
+		OutPoint:  *outpoint,
+		ID:        asset.ID(assetId),
+		ScriptKey: asset.SerializedKey(roundDetails.ScriptKey),
+	}
+
 	vPkt.Inputs[idx] = &tappsbt.VInput{
 		PrevID: prevID,
 		Anchor: tappsbt.Anchor{
-			Value:            assetInput.AnchorOutputValue,
-			PkScript:         anchorPkScript,
-			InternalKey:      internalKey.PubKey,
-			MerkleRoot:       anchorMerkleRoot[:],
-			TapscriptSibling: tapscriptSiblingBytes,
-			Bip32Derivation:  []*psbt.Bip32Derivation{derivation},
-			TrBip32Derivation: []*psbt.TaprootBip32Derivation{
-				trDerivation,
-			},
+			Value:            btcutil.Amount(roundDetails.Anchor.Value),
+			PkScript:         outputScript,
+			InternalKey:      asset.NUMSPubKey,
+			MerkleRoot:       roundDetails.Anchor.MerkleRoot,
+			TapscriptSibling: roundDetails.Anchor.TapscriptSibling,
 		},
-		Proof: inputProof,
+		Proof: proof,
 		PInput: psbt.PInput{
 			SighashType: txscript.SigHashDefault,
 		},
 	}
-	vPkt.SetInputAsset(idx, assetInput.Asset)
-
-	inputAltLeaves, err := assetInput.Commitment.FetchAltLeaves()
-	if err != nil {
-		return fmt.Errorf("cannot fetch alt leaves from input: %w", err)
-	}
-
-	err = vPkt.Inputs[idx].SetAltLeaves(inputAltLeaves)
-	if err != nil {
-		return fmt.Errorf("cannot set alt leaves on vInput: %w", err)
-	}
+	//Verify If This is the best way
+	vPkt.SetInputAsset(idx, &proof.Asset)
 
 	return nil
 }

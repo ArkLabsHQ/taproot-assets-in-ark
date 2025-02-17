@@ -10,17 +10,18 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/lightninglabs/taproot-assets/asset"
+	"github.com/lightninglabs/taproot-assets/taprpc"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 )
 
-type RoundArkScript struct {
+type ArkScript struct {
 	Left   txscript.TapLeaf
 	Right  txscript.TapLeaf
 	Branch txscript.TapBranch
 }
 
-type RoundArkAssetScript struct {
+type ArkAssetScript struct {
 	userNonce    *musig2.Nonces
 	serverNonce  *musig2.Nonces
 	tapScriptKey asset.ScriptKey
@@ -29,22 +30,21 @@ type RoundArkAssetScript struct {
 	controlBlock *txscript.ControlBlock
 }
 
-type BoardingArkScript struct {
-	Left   txscript.TapLeaf
-	Right  txscript.TapLeaf
-	Branch txscript.TapBranch
+type ArkTransferOutputDetails struct {
+	btcControlBlock *txscript.ControlBlock
+
+	userScriptKey     asset.ScriptKey
+	userInternalKey   keychain.KeyDescriptor
+	serverScriptKey   asset.ScriptKey
+	serverInternalKey keychain.KeyDescriptor
+
+	arkScript      ArkScript
+	arkAssetScript ArkAssetScript
+
+	previousOutput *taprpc.TransferOutput
 }
 
-type BoardingArkAssetScript struct {
-	userNonce    *musig2.Nonces
-	serverNonce  *musig2.Nonces
-	tapScriptKey asset.ScriptKey
-	leaves       []txscript.TapLeaf
-	tree         *txscript.IndexedTapScriptTree
-	controlBlock *txscript.ControlBlock
-}
-
-func CreateBoardingArkScript(user, server *btcec.PublicKey, locktime uint32) (BoardingArkScript, error) {
+func CreateBoardingArkScript(user, server *btcec.PublicKey, locktime uint32) (ArkScript, error) {
 	leftLeafScript, err := txscript.NewScriptBuilder().
 		AddData(schnorr.SerializePubKey(user)).
 		AddOp(txscript.OP_CHECKSIG).
@@ -55,7 +55,7 @@ func CreateBoardingArkScript(user, server *btcec.PublicKey, locktime uint32) (Bo
 		Script()
 
 	if err != nil {
-		return BoardingArkScript{}, fmt.Errorf("failed to decode left script: %w", err)
+		return ArkScript{}, fmt.Errorf("failed to decode left script: %w", err)
 	}
 
 	leftLeaf := txscript.NewTapLeaf(txscript.BaseLeafVersion, leftLeafScript)
@@ -68,18 +68,18 @@ func CreateBoardingArkScript(user, server *btcec.PublicKey, locktime uint32) (Bo
 		Script()
 
 	if err != nil {
-		return BoardingArkScript{}, fmt.Errorf("failed to decode left script: %w", err)
+		return ArkScript{}, fmt.Errorf("failed to decode left script: %w", err)
 	}
 
 	rightLeaf := txscript.NewTapLeaf(txscript.BaseLeafVersion, rightLeafScript)
 
 	branch := txscript.NewTapBranch(leftLeaf, rightLeaf)
 
-	return BoardingArkScript{Left: leftLeaf, Right: rightLeaf, Branch: branch}, nil
+	return ArkScript{Left: leftLeaf, Right: rightLeaf, Branch: branch}, nil
 }
 
 func CreateBoardingArkAssetScript(
-	user, server *btcec.PublicKey, locktime uint32) BoardingArkAssetScript {
+	user, server *btcec.PublicKey, locktime uint32) ArkAssetScript {
 
 	userBoardingNonceOpt := musig2.WithPublicKey(
 		user,
@@ -151,10 +151,10 @@ func CreateBoardingArkAssetScript(
 		controlBlock.OutputKeyYIsOdd = true
 	}
 
-	return BoardingArkAssetScript{userNonces, serverNonces, tapScriptKey, leaves, tree, controlBlock}
+	return ArkAssetScript{userNonces, serverNonces, tapScriptKey, leaves, tree, controlBlock}
 }
 
-func CreateRoundArkScript(user, server *btcec.PublicKey, locktime uint32) (RoundArkScript, error) {
+func CreateRoundArkScript(user, server *btcec.PublicKey, locktime uint32) (ArkScript, error) {
 	leftLeafScript, err := txscript.NewScriptBuilder().
 		AddData(schnorr.SerializePubKey(user)).
 		AddOp(txscript.OP_CHECKSIG).
@@ -165,7 +165,7 @@ func CreateRoundArkScript(user, server *btcec.PublicKey, locktime uint32) (Round
 		Script()
 
 	if err != nil {
-		return RoundArkScript{}, fmt.Errorf("failed to decode left script: %w", err)
+		return ArkScript{}, fmt.Errorf("failed to decode left script: %w", err)
 	}
 
 	leftLeaf := txscript.NewTapLeaf(txscript.BaseLeafVersion, leftLeafScript)
@@ -178,18 +178,18 @@ func CreateRoundArkScript(user, server *btcec.PublicKey, locktime uint32) (Round
 		Script()
 
 	if err != nil {
-		return RoundArkScript{}, fmt.Errorf("failed to decode left script: %w", err)
+		return ArkScript{}, fmt.Errorf("failed to decode left script: %w", err)
 	}
 
 	rightLeaf := txscript.NewTapLeaf(txscript.BaseLeafVersion, rightLeafScript)
 
 	branch := txscript.NewTapBranch(leftLeaf, rightLeaf)
 
-	return RoundArkScript{Left: leftLeaf, Right: rightLeaf, Branch: branch}, nil
+	return ArkScript{Left: leftLeaf, Right: rightLeaf, Branch: branch}, nil
 }
 
 func CreateRoundArkAssetScript(
-	user, server *btcec.PublicKey, locktime uint32) RoundArkAssetScript {
+	user, server *btcec.PublicKey, locktime uint32) ArkAssetScript {
 
 	userBoardingNonceOpt := musig2.WithPublicKey(
 		user,
@@ -261,5 +261,5 @@ func CreateRoundArkAssetScript(
 		controlBlock.OutputKeyYIsOdd = true
 	}
 
-	return RoundArkAssetScript{userNonces, serverNonces, tapScriptKey, leaves, tree, controlBlock}
+	return ArkAssetScript{userNonces, serverNonces, tapScriptKey, leaves, tree, controlBlock}
 }
