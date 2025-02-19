@@ -22,8 +22,7 @@ type ArkScript struct {
 }
 
 type ArkAssetScript struct {
-	userNonce    *musig2.Nonces
-	serverNonce  *musig2.Nonces
+	nonces       []*musig2.Nonces
 	tapScriptKey asset.ScriptKey
 	leaves       []txscript.TapLeaf
 	tree         *txscript.IndexedTapScriptTree
@@ -90,6 +89,8 @@ func CreateBoardingArkAssetScript(
 	userNonces, _ := musig2.GenNonces(userBoardingNonceOpt)
 	serverNonces, _ := musig2.GenNonces(serverBoardingNonceOpt)
 
+	nonces := []*musig2.Nonces{userNonces, serverNonces}
+
 	musigUserServer, err := input.MuSig2CombineKeys(
 		input.MuSig2Version100RC2, []*btcec.PublicKey{
 			user,
@@ -107,6 +108,10 @@ func CreateBoardingArkAssetScript(
 		AddOp(txscript.OP_CHECKSIG).
 		Script()
 
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	leaves[0] = txscript.TapLeaf{
 		LeafVersion: txscript.BaseLeafVersion,
 		Script:      muSigTapscript,
@@ -118,6 +123,10 @@ func CreateBoardingArkAssetScript(
 		AddData(schnorr.SerializePubKey(user)).
 		AddOp(txscript.OP_CHECKSIG).
 		Script()
+
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	leaves[1] = txscript.TapLeaf{
 		LeafVersion: txscript.BaseLeafVersion,
@@ -151,10 +160,10 @@ func CreateBoardingArkAssetScript(
 		controlBlock.OutputKeyYIsOdd = true
 	}
 
-	return ArkAssetScript{userNonces, serverNonces, tapScriptKey, leaves, tree, controlBlock}
+	return ArkAssetScript{nonces, tapScriptKey, leaves, tree, controlBlock}
 }
 
-func CreateRoundArkScript(user, server *btcec.PublicKey, locktime uint32) (ArkScript, error) {
+func CreateRoundLeafArkScript(user, server *btcec.PublicKey, locktime uint32) (ArkScript, error) {
 	leftLeafScript, err := txscript.NewScriptBuilder().
 		AddData(schnorr.SerializePubKey(user)).
 		AddOp(txscript.OP_CHECKSIG).
@@ -188,23 +197,27 @@ func CreateRoundArkScript(user, server *btcec.PublicKey, locktime uint32) (ArkSc
 	return ArkScript{Left: leftLeaf, Right: rightLeaf, Branch: branch}, nil
 }
 
-func CreateRoundArkAssetScript(
-	user, server *btcec.PublicKey, locktime uint32) ArkAssetScript {
+func CreateRoundBrachArkAssetScript(
+	server *btcec.PublicKey, locktime uint32, users ...*btcec.PublicKey) ArkAssetScript {
+	nonces := make([]*musig2.Nonces, len(users)+1)
 
-	userBoardingNonceOpt := musig2.WithPublicKey(
-		user,
-	)
+	for _, user := range users {
+		userBoardingNonceOpt := musig2.WithPublicKey(
+			user,
+		)
+
+		userNonces, _ := musig2.GenNonces(userBoardingNonceOpt)
+		nonces = append(nonces, userNonces)
+	}
 	serverBoardingNonceOpt := musig2.WithPublicKey(
 		server,
 	)
-	userNonces, _ := musig2.GenNonces(userBoardingNonceOpt)
 	serverNonces, _ := musig2.GenNonces(serverBoardingNonceOpt)
+	nonces = append(nonces, serverNonces)
 
 	musigUserServer, err := input.MuSig2CombineKeys(
-		input.MuSig2Version100RC2, []*btcec.PublicKey{
-			user,
-			server,
-		}, true, &input.MuSig2Tweaks{TaprootBIP0086Tweak: true},
+		input.MuSig2Version100RC2, append(users, server),
+		true, &input.MuSig2Tweaks{TaprootBIP0086Tweak: true},
 	)
 
 	if err != nil {
@@ -217,6 +230,10 @@ func CreateRoundArkAssetScript(
 		AddOp(txscript.OP_CHECKSIG).
 		Script()
 
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	leaves[0] = txscript.TapLeaf{
 		LeafVersion: txscript.BaseLeafVersion,
 		Script:      muSigTapscript,
@@ -228,6 +245,10 @@ func CreateRoundArkAssetScript(
 		AddData(schnorr.SerializePubKey(server)).
 		AddOp(txscript.OP_CHECKSIG).
 		Script()
+
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	leaves[1] = txscript.TapLeaf{
 		LeafVersion: txscript.BaseLeafVersion,
@@ -261,5 +282,44 @@ func CreateRoundArkAssetScript(
 		controlBlock.OutputKeyYIsOdd = true
 	}
 
-	return ArkAssetScript{userNonces, serverNonces, tapScriptKey, leaves, tree, controlBlock}
+	return ArkAssetScript{nonces, tapScriptKey, leaves, tree, controlBlock}
+}
+
+func CreateRoundBranchArkScript(server *btcec.PublicKey, locktime uint32, users ...*btcec.PublicKey) (ArkScript, error) {
+	leftLeafScript := txscript.NewScriptBuilder()
+
+	for _, user := range users {
+		leftLeafScript.AddData(schnorr.SerializePubKey(user)).
+			AddOp(txscript.OP_CHECKSIG)
+	}
+
+	leftLeafFinalScript, err := leftLeafScript.
+		AddData(schnorr.SerializePubKey(server)).
+		AddOp(txscript.OP_CHECKSIGADD).
+		AddInt64(int64(len(users))).
+		AddOp(txscript.OP_EQUAL).
+		Script()
+
+	if err != nil {
+		return ArkScript{}, fmt.Errorf("failed to decode left script: %w", err)
+	}
+
+	leftLeaf := txscript.NewTapLeaf(txscript.BaseLeafVersion, leftLeafFinalScript)
+
+	rightLeafScript, err := txscript.NewScriptBuilder().
+		AddInt64(int64(locktime)).
+		AddOp(txscript.OP_CHECKLOCKTIMEVERIFY).
+		AddData(schnorr.SerializePubKey(server)).
+		AddOp(txscript.OP_CHECKSIG).
+		Script()
+
+	if err != nil {
+		return ArkScript{}, fmt.Errorf("failed to decode left script: %w", err)
+	}
+
+	rightLeaf := txscript.NewTapLeaf(txscript.BaseLeafVersion, rightLeafScript)
+
+	branch := txscript.NewTapBranch(leftLeaf, rightLeaf)
+
+	return ArkScript{Left: leftLeaf, Right: rightLeaf, Branch: branch}, nil
 }

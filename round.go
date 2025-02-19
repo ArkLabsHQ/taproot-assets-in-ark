@@ -5,32 +5,45 @@ import (
 	"context"
 	"log"
 
-	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/lightninglabs/taproot-assets/address"
 	"github.com/lightninglabs/taproot-assets/asset"
-	"github.com/lightninglabs/taproot-assets/proof"
 	"github.com/lightninglabs/taproot-assets/tappsbt"
 	"github.com/lightninglabs/taproot-assets/taprpc"
 	"github.com/lightninglabs/taproot-assets/taprpc/assetwalletrpc"
 	"github.com/lightninglabs/taproot-assets/tapsend"
 )
 
-type InputRoundDetails struct {
-	anchorPoint       wire.OutPoint
-	assetId           asset.ID
-	anchorScript      []byte
-	anchorMerkleRoot  chainhash.Hash
-	anchorAmount      btcutil.Amount
-	tapscriptSiblings []byte
-	proof             *proof.Proof
-	scriptKey         asset.ScriptKey
-	asset             *asset.Asset
-	inputcommitment   tappsbt.InputCommitments
+type RoundInput struct {
+	server  *TapClient
+	users   [4]*TapClient
+	assetId []byte
+
+	boardingDetails RoundBoardingDetails
+}
+
+type RoundOutput struct {
+	roundTx           *wire.MsgTx
+	unilateralExitTxs [][]wire.MsgTx
+}
+
+type RoundBoardingDetails struct {
+	boardingUser            *TapClient
+	boardingTransferDetails ArkTransferOutputDetails
+	boardingAmount          uint64
+}
+
+func CreateRound(roundInput RoundInput) RoundOutput {
+	rootArkScript := 
+
+	return Round{server, users, assetId, nil, make([][]wire.MsgTx, 0), boardingDetails}
+}
+
+func (r *Round) FinaliseRound() {
+
 }
 
 type IntermediateOutput struct {
@@ -40,27 +53,31 @@ type IntermediateOutput struct {
 	addr                     *taprpc.Addr
 }
 
-func CreateAndSignOffchainIntermediateRoundTransfer(amnt uint64, assetId []byte, userTapClient, serverTapClient *TapClient, lockHeight uint32, ato ArkTransferOutputDetails) (ArkTransferOutputDetails, IntermediateOutput) {
+func CreateAndSignOffchainIntermediateRoundTransfer(amnt uint64, assetId []byte, userTapClient []*TapClient,  serverTapClient *TapClient, lockHeight uint32, ato ArkTransferOutputDetails) (ArkTransferOutputDetails, IntermediateOutput) {
 	userScriptKey, userInternalKey := userTapClient.GetNextKeys()
 	serverScriptKey, serverInternalKey := serverTapClient.GetNextKeys()
 
+	if len(userTapClient) == 1 {
+		createAndSignOffchainFinalRoundTransfer(amnt, assetId, userTapClient[0], serverTapClient)
+	}
+
 	// 1. Create Both Bording Ark Script and Boarding Ark Asset Script
-	arkScript, err := CreateRoundArkScript(userInternalKey.PubKey, serverInternalKey.PubKey, lockHeight)
+	arkScript, err := CreateRoundLeafArkScript(userInternalKey.PubKey, serverInternalKey.PubKey, lockHeight)
 	if err != nil {
 		log.Fatal(err)
 	}
-	arkAssetScript := CreateRoundArkAssetScript(userScriptKey.RawKey.PubKey, serverScriptKey.RawKey.PubKey, lockHeight)
+	arkAssetScript := CreateRoundLeafArkAssetScript(userScriptKey.RawKey.PubKey, serverScriptKey.RawKey.PubKey, lockHeight)
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	addr_resp, err := serverTapClient.GetBoardingAddress(arkScript.Branch, arkAssetScript.tapScriptKey, assetId, amnt)
 	if err != nil {
-		log.Fatalf("cannot get address %w", err)
+		log.Fatalf("cannot get address %v", err)
 	}
 	addr, err := address.DecodeAddress(addr_resp.Encoded, &address.RegressionNetTap)
 	if err != nil {
-		log.Fatalf("cannot decode address %w", err)
+		log.Fatalf("cannot decode address %v", err)
 	}
 	addresses := make([]*address.Tap, 1)
 	addresses[0] = addr
@@ -69,7 +86,7 @@ func CreateAndSignOffchainIntermediateRoundTransfer(amnt uint64, assetId []byte,
 	fundedPkt, err := tappsbt.FromAddresses(addresses, 1)
 
 	if err != nil {
-		log.Fatalf("cannot generate packet from address %w", err)
+		log.Fatalf("cannot generate packet from address %v", err)
 	}
 
 	// Note: This add input details
@@ -172,18 +189,18 @@ func CreateAndSignOffchainIntermediateRoundTransfer(amnt uint64, assetId []byte,
 
 }
 
-func CreateAndSignOffchainFinalRoundTransfer(amnt uint64, assetId []byte, userTapClient, serverTapClient *TapClient, lockHeight uint32, ato ArkTransferOutputDetails, inte IntermediateOutput) {
+func createAndSignOffchainFinalRoundTransfer(amnt uint64, assetId []byte, userTapClient, serverTapClient *TapClient, lockHeight uint32, ato ArkTransferOutputDetails, inte IntermediateOutput) {
 
 	addr_resp, err := userTapClient.client.NewAddr(context.TODO(), &taprpc.NewAddrRequest{
 		AssetId: assetId,
 		Amt:     amnt,
 	})
 	if err != nil {
-		log.Fatalf("cannot get address %w", err)
+		log.Fatalf("cannot get address %v", err)
 	}
 	addr, err := address.DecodeAddress(addr_resp.Encoded, &address.RegressionNetTap)
 	if err != nil {
-		log.Fatalf("cannot decode address %w", err)
+		log.Fatalf("cannot decode address %v", err)
 	}
 	addresses := make([]*address.Tap, 1)
 	addresses[0] = addr
@@ -192,7 +209,7 @@ func CreateAndSignOffchainFinalRoundTransfer(amnt uint64, assetId []byte, userTa
 	fundedPkt, err := tappsbt.FromAddresses(addresses, 1)
 
 	if err != nil {
-		log.Fatalf("cannot generate packet from address %w", err)
+		log.Fatalf("cannot generate packet from address %v", err)
 	}
 
 	// Note: This add input details
