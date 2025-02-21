@@ -297,7 +297,12 @@ func CreateAndSignOffchainFinalRoundTransfer(amnt uint64, assetId []byte, userTa
 		log.Fatalf("cannot send raw transaction %v", err)
 	}
 
-	_, err = bcoinClient.Generate(1)
+	address1, err := bcoinClient.GetNewAddress("")
+	if err != nil {
+		log.Fatalf("cannot generate address %v", err)
+	}
+	maxretries := int64(3)
+	_, err = bcoinClient.GenerateToAddress(1, address1, &maxretries)
 	if err != nil {
 		log.Fatalf("cannot generate to address %v", err)
 	}
@@ -306,10 +311,23 @@ func CreateAndSignOffchainFinalRoundTransfer(amnt uint64, assetId []byte, userTa
 	_ = serverTapClient.LogAndPublish(signedPkt, finalizedTransferPackets, nil,
 		commitResp,
 	)
-	blockhash, err := bcoinClient.Generate(1)
+
+	// userTapClient.IncomingTransferEvent(addr_resp)
+
+	address1, err = bcoinClient.GetNewAddress("")
+	if err != nil {
+		log.Fatalf("cannot generate address %v", err)
+	}
+	maxretries = int64(3)
+	blockhash, err := bcoinClient.GenerateToAddress(1, address1, &maxretries)
 	if err != nil {
 		log.Fatalf("cannot generate to address %v", err)
 	}
+
+	log.Println("Final Asset Transfered Please Mine")
+	_ = serverTapClient.LogAndPublish(signedPkt, finalizedTransferPackets, nil,
+		commitResp,
+	)
 
 	block, err := bcoinClient.GetBlock(blockhash[0])
 	if err != nil {
@@ -342,9 +360,13 @@ func CreateAndSignOffchainFinalRoundTransfer(amnt uint64, assetId []byte, userTa
 		log.Fatalf("cannot enocde prooffile %v", userProofFile)
 	}
 
-	userTapClient.devclient.ImportProof(context.TODO(), &tapdevrpc.ImportProofRequest{
+	_, err = userTapClient.devclient.ImportProof(context.TODO(), &tapdevrpc.ImportProofRequest{
 		ProofFile:    userProofFile,
 		GenesisPoint: "f5461e7f2fbd14ca2524fdde6d36ef93a49a5c55a1f1fb7902d47fb15e3e894d",
 	})
+
+	if err != nil {
+		log.Fatalf("cannot print file %v", err)
+	}
 
 }
