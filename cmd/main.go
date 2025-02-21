@@ -42,7 +42,7 @@ func main() {
 	currentBlockHeight := 300
 	lockBlockHeight := currentBlockHeight + 4320
 
-	assetId, _ := hex.DecodeString("0ccb44c1547ffdd0020466655162e8227890c33486c0f7bc582f55978d81835f")
+	assetId, _ := hex.DecodeString("2a530c92ff7516cd676d606a11d3ee052424a0a99443f118aec1f7602882d507")
 	ammt := 10
 
 	userLndClient := taponark.InitLndClient(userLndRpcHostPort, userLndRpcPort, userLndTLSCert, userLndMacaroon)
@@ -53,7 +53,7 @@ func main() {
 
 	boardingTransferDetails := taponark.SpendToBoardingTransaction(assetId, uint64(ammt), uint32(lockBlockHeight), &userTapClient, &serverTapClient)
 
-	intermediateTransferDetails, intermediatOutput := taponark.CreateAndSignOffchainIntermediateRoundTransfer(uint64(ammt), assetId, &userTapClient, &serverTapClient, uint32(lockBlockHeight), boardingTransferDetails)
+	intermediateTransferDetails, intermediatOutput := taponark.CreateAndSignOffchainIntermediateRoundTransfer(uint64(ammt), assetId, &userTapClient, &serverTapClient, uint32(lockBlockHeight), boardingTransferDetails, nil)
 	taponark.CreateAndSignOffchainFinalRoundTransfer(uint64(ammt), assetId, &userTapClient, &serverTapClient, uint32(lockBlockHeight), intermediateTransferDetails, intermediatOutput)
 	// wait for transfer to reach
 

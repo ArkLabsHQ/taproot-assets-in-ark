@@ -32,6 +32,10 @@ func SpendToBoardingTransaction(assetId []byte, amnt uint64, lockHeight uint32, 
 	// 2. Send From User To Boarding Address
 	sendResp, err := userTapClient.SendAsset(addr)
 
+	if err != nil {
+		log.Fatalf("cannot send to address %v", err)
+	}
+
 	// spend from Boarding Address
 	btcInternalKey := asset.NUMSPubKey
 	btcControlBlock := &txscript.ControlBlock{
@@ -54,6 +58,16 @@ func SpendToBoardingTransaction(assetId []byte, amnt uint64, lockHeight uint32, 
 
 	//TODO (Joshua) Ensure To Improve
 	log.Println("Asset Transfered Please Mine")
+	bcoinClient := GetBitcoinClient()
+	address1, err := bcoinClient.GetNewAddress("")
+	if err != nil {
+		log.Fatalf("cannot generate address %v", err)
+	}
+	maxretries := int64(3)
+	_, err = bcoinClient.GenerateToAddress(1, address1, &maxretries)
+	if err != nil {
+		log.Fatalf("cannot generate to address %v", err)
+	}
 	serverTapClient.IncomingTransferEvent(addr)
 
 	return ArkTransferOutputDetails{btcControlBlock, userScriptKey, userInternalKey, serverScriptKey, serverInternalKey, arkScript, arkAssetScript, transferOutput}

@@ -27,6 +27,7 @@ import (
 	"github.com/lightninglabs/taproot-assets/tappsbt"
 	"github.com/lightninglabs/taproot-assets/taprpc"
 	"github.com/lightninglabs/taproot-assets/taprpc/assetwalletrpc"
+	"github.com/lightninglabs/taproot-assets/taprpc/tapdevrpc"
 	"github.com/lightninglabs/taproot-assets/tapscript"
 	"github.com/lightninglabs/taproot-assets/tapsend"
 
@@ -51,11 +52,11 @@ func deserializeVPacket(packetBytes []byte) *tappsbt.VPacket {
 }
 
 type TapClient struct {
-	client          taprpc.TaprootAssetsClient
-	wallet          assetwalletrpc.AssetWalletClient
-	lndClient       LndClient
-	serverLndClient LndClient
-	closeClient     func()
+	client      taprpc.TaprootAssetsClient
+	wallet      assetwalletrpc.AssetWalletClient
+	devclient   tapdevrpc.TapDevClient
+	lndClient   LndClient
+	closeClient func()
 }
 
 func InitTapClient(hostPort, tapdport, tlsData, macaroonData string, lndClient LndClient) TapClient {
@@ -68,8 +69,8 @@ func InitTapClient(hostPort, tapdport, tlsData, macaroonData string, lndClient L
 	cleanUp := func() {
 		clientConn.Close()
 	}
-
-	return TapClient{client: taprpc.NewTaprootAssetsClient(clientConn), wallet: assetwalletrpc.NewAssetWalletClient(clientConn),
+	devclient := tapdevrpc.NewTapDevClient(clientConn)
+	return TapClient{client: taprpc.NewTaprootAssetsClient(clientConn), wallet: assetwalletrpc.NewAssetWalletClient(clientConn), devclient: devclient,
 		closeClient: cleanUp,
 		lndClient:   lndClient,
 	}
@@ -705,6 +706,43 @@ func createAndSetInput(vPkt *tappsbt.VPacket, idx int,
 	}
 	//Verify If This is the best way
 	vPkt.SetInputAsset(idx, &proof.Asset)
+
+	return nil
+}
+
+func createAndSetInputIntermediate(vPkt *tappsbt.VPacket, idx int,
+	roundDetails UnpulishedTransfer, assetId []byte) error {
+
+	// At this point, we have a valid "coin" to spend in the commitment, so
+	// we'll add the relevant information to the virtual TX's input.
+	tapKey := txscript.ComputeTaprootOutputKey(roundDetails.internalKey, roundDetails.merkleRoot)
+	outputScript, err := tapscript.PayToTaprootScript(tapKey)
+	if err != nil {
+		log.Fatalf("cannot get TaprootScript %v", err)
+	}
+
+	prevID := asset.PrevID{
+		OutPoint:  *roundDetails.outpoint,
+		ID:        asset.ID(assetId),
+		ScriptKey: asset.ToSerialized(roundDetails.scriptKey.PubKey),
+	}
+
+	vPkt.Inputs[idx] = &tappsbt.VInput{
+		PrevID: prevID,
+		Anchor: tappsbt.Anchor{
+			Value:            btcutil.Amount(roundDetails.anchorValue),
+			PkScript:         outputScript,
+			InternalKey:      asset.NUMSPubKey,
+			MerkleRoot:       roundDetails.merkleRoot,
+			TapscriptSibling: roundDetails.taprootSibling,
+		},
+		Proof: roundDetails.proof,
+		PInput: psbt.PInput{
+			SighashType: txscript.SigHashDefault,
+		},
+	}
+	//Verify If This is the best way
+	vPkt.SetInputAsset(idx, &roundDetails.proof.Asset)
 
 	return nil
 }

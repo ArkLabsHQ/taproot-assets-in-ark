@@ -5,42 +5,64 @@ import (
 	"context"
 	"log"
 
-	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/psbt"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/lightninglabs/taproot-assets/address"
 	"github.com/lightninglabs/taproot-assets/asset"
+	"github.com/lightninglabs/taproot-assets/commitment"
 	"github.com/lightninglabs/taproot-assets/proof"
 	"github.com/lightninglabs/taproot-assets/tappsbt"
 	"github.com/lightninglabs/taproot-assets/taprpc"
-	"github.com/lightninglabs/taproot-assets/taprpc/assetwalletrpc"
+	"github.com/lightninglabs/taproot-assets/taprpc/tapdevrpc"
 	"github.com/lightninglabs/taproot-assets/tapsend"
 )
 
-type InputRoundDetails struct {
-	anchorPoint       wire.OutPoint
-	assetId           asset.ID
-	anchorScript      []byte
-	anchorMerkleRoot  chainhash.Hash
-	anchorAmount      btcutil.Amount
-	tapscriptSiblings []byte
-	proof             *proof.Proof
-	scriptKey         asset.ScriptKey
-	asset             *asset.Asset
-	inputcommitment   tappsbt.InputCommitments
+type UnpulishedTransfer struct {
+	finalTx          *wire.MsgTx
+	outpoint         *wire.OutPoint
+	proof            *proof.Proof
+	merkleRoot       []byte
+	taprootSibling   []byte
+	internalKey      *btcec.PublicKey
+	scriptKey        asset.ScriptKey
+	anchorValue      int64
+	taprootAssetRoot []byte
 }
 
-type IntermediateOutput struct {
-	signedPkt                *psbt.Packet
-	finalizedTransferPackets []*tappsbt.VPacket
-	commitResp               *assetwalletrpc.CommitVirtualPsbtsResponse
-	addr                     *taprpc.Addr
+func DeriveUnpublishedOutput(btcPacket *psbt.Packet, vout *tappsbt.VOutput) UnpulishedTransfer {
+
+	proof := vout.ProofSuffix
+	internalKey := vout.AnchorOutputInternalKey
+	scriptKey := vout.ScriptKey
+	merkleRoot := tappsbt.ExtractCustomField(
+		btcPacket.Outputs[vout.AnchorOutputIndex].Unknowns, tappsbt.PsbtKeyTypeOutputTaprootMerkleRoot,
+	)
+	taprootAssetRoot := tappsbt.ExtractCustomField(
+		btcPacket.Outputs[vout.AnchorOutputIndex].Unknowns, tappsbt.PsbtKeyTypeOutputAssetRoot,
+	)
+	taprootSibling, _, err := commitment.MaybeEncodeTapscriptPreimage(vout.AnchorOutputTapscriptSibling)
+	if err != nil {
+		log.Fatalf("cannot encode tapscript preimage %v", err)
+	}
+
+	finalTx, err := psbt.Extract(btcPacket)
+	if err != nil {
+		log.Fatalf("cannot extract final transaction %v", err)
+	}
+	txhash := vout.ProofSuffix.AnchorTx.TxHash()
+
+	outpoint := wire.NewOutPoint(&txhash, vout.AnchorOutputIndex)
+
+	anchorValue := btcPacket.UnsignedTx.TxOut[vout.AnchorOutputIndex].Value
+
+	return UnpulishedTransfer{finalTx, outpoint, proof, merkleRoot, taprootSibling, internalKey, scriptKey, anchorValue, taprootAssetRoot}
+
 }
 
-func CreateAndSignOffchainIntermediateRoundTransfer(amnt uint64, assetId []byte, userTapClient, serverTapClient *TapClient, lockHeight uint32, ato ArkTransferOutputDetails) (ArkTransferOutputDetails, IntermediateOutput) {
+func CreateAndSignOffchainIntermediateRoundTransfer(amnt uint64, assetId []byte, userTapClient, serverTapClient *TapClient, lockHeight uint32, ato ArkTransferOutputDetails, unpublishedTransfer *UnpulishedTransfer) (ArkTransferOutputDetails, UnpulishedTransfer) {
 	userScriptKey, userInternalKey := userTapClient.GetNextKeys()
 	serverScriptKey, serverInternalKey := serverTapClient.GetNextKeys()
 
@@ -56,11 +78,11 @@ func CreateAndSignOffchainIntermediateRoundTransfer(amnt uint64, assetId []byte,
 
 	addr_resp, err := serverTapClient.GetBoardingAddress(arkScript.Branch, arkAssetScript.tapScriptKey, assetId, amnt)
 	if err != nil {
-		log.Fatalf("cannot get address %w", err)
+		log.Fatalf("cannot get address %v", err)
 	}
 	addr, err := address.DecodeAddress(addr_resp.Encoded, &address.RegressionNetTap)
 	if err != nil {
-		log.Fatalf("cannot decode address %w", err)
+		log.Fatalf("cannot decode address %v", err)
 	}
 	addresses := make([]*address.Tap, 1)
 	addresses[0] = addr
@@ -69,11 +91,15 @@ func CreateAndSignOffchainIntermediateRoundTransfer(amnt uint64, assetId []byte,
 	fundedPkt, err := tappsbt.FromAddresses(addresses, 1)
 
 	if err != nil {
-		log.Fatalf("cannot generate packet from address %w", err)
+		log.Fatalf("cannot generate packet from address %v", err)
 	}
 
 	// Note: This add input details
-	createAndSetInput(fundedPkt, 0, ato.previousOutput, assetId)
+	if ato.previousOutput != nil {
+		createAndSetInput(fundedPkt, 0, ato.previousOutput, assetId)
+	} else {
+		createAndSetInputIntermediate(fundedPkt, 0, *unpublishedTransfer, assetId)
+	}
 
 	// Note: This add output details
 	tapsend.PrepareOutputAssets(context.TODO(), fundedPkt)
@@ -109,7 +135,7 @@ func CreateAndSignOffchainIntermediateRoundTransfer(amnt uint64, assetId []byte,
 		log.Fatal(err)
 	}
 
-	btcTransferPkt, finalizedTransferPackets, _, commitResp := serverTapClient.CommitVirtualPsbts(
+	btcTransferPkt, finalizedTransferPackets, _, _ := serverTapClient.CommitVirtualPsbts(
 		transferBtcPkt, vPackets, nil, -1,
 	)
 
@@ -143,10 +169,6 @@ func CreateAndSignOffchainIntermediateRoundTransfer(amnt uint64, assetId []byte,
 	btcTransferPkt.Inputs[assetInputIdx].FinalScriptWitness = buf.Bytes()
 	signedPkt := serverTapClient.FinalizePacket(btcTransferPkt)
 
-	logAndPublishResponse := serverTapClient.LogAndPublish(signedPkt, finalizedTransferPackets, nil,
-		commitResp,
-	)
-
 	// spend from Boarding Address
 	btcInternalKey := asset.NUMSPubKey
 	btcControlBlock := &txscript.ControlBlock{
@@ -154,11 +176,12 @@ func CreateAndSignOffchainIntermediateRoundTransfer(amnt uint64, assetId []byte,
 		InternalKey: btcInternalKey,
 	}
 
-	// Transfer Of Round is always 0
-	transferOutput := logAndPublishResponse.Transfer.Outputs[1]
-	multiSigOutAnchor := transferOutput.Anchor
+	// Real Transfer is always output 1
+	unpublishedTransaction := DeriveUnpublishedOutput(signedPkt, finalizedTransferPackets[0].Outputs[1])
+
+	log.Println(unpublishedTransaction.taprootAssetRoot)
 	rightNodeHash := arkScript.Right.TapHash()
-	inclusionproof := append(rightNodeHash[:], multiSigOutAnchor.TaprootAssetRoot[:]...)
+	inclusionproof := append(rightNodeHash[:], unpublishedTransaction.taprootAssetRoot[:]...)
 	btcControlBlock.InclusionProof = inclusionproof
 	rootHash := btcControlBlock.RootHash(arkScript.Left.Script)
 	tapKey := txscript.ComputeTaprootOutputKey(btcInternalKey, rootHash)
@@ -168,22 +191,22 @@ func CreateAndSignOffchainIntermediateRoundTransfer(amnt uint64, assetId []byte,
 		btcControlBlock.OutputKeyYIsOdd = true
 	}
 
-	return ArkTransferOutputDetails{btcControlBlock, userScriptKey, userInternalKey, serverScriptKey, serverInternalKey, arkScript, arkAssetScript, transferOutput}, IntermediateOutput{signedPkt, finalizedTransferPackets, commitResp, addr_resp}
+	return ArkTransferOutputDetails{btcControlBlock, userScriptKey, userInternalKey, serverScriptKey, serverInternalKey, arkScript, arkAssetScript, nil}, unpublishedTransaction
 
 }
 
-func CreateAndSignOffchainFinalRoundTransfer(amnt uint64, assetId []byte, userTapClient, serverTapClient *TapClient, lockHeight uint32, ato ArkTransferOutputDetails, inte IntermediateOutput) {
+func CreateAndSignOffchainFinalRoundTransfer(amnt uint64, assetId []byte, userTapClient, serverTapClient *TapClient, lockHeight uint32, ato ArkTransferOutputDetails, inte UnpulishedTransfer) {
 
 	addr_resp, err := userTapClient.client.NewAddr(context.TODO(), &taprpc.NewAddrRequest{
 		AssetId: assetId,
 		Amt:     amnt,
 	})
 	if err != nil {
-		log.Fatalf("cannot get address %w", err)
+		log.Fatalf("cannot get address %v", err)
 	}
 	addr, err := address.DecodeAddress(addr_resp.Encoded, &address.RegressionNetTap)
 	if err != nil {
-		log.Fatalf("cannot decode address %w", err)
+		log.Fatalf("cannot decode address %v", err)
 	}
 	addresses := make([]*address.Tap, 1)
 	addresses[0] = addr
@@ -192,11 +215,11 @@ func CreateAndSignOffchainFinalRoundTransfer(amnt uint64, assetId []byte, userTa
 	fundedPkt, err := tappsbt.FromAddresses(addresses, 1)
 
 	if err != nil {
-		log.Fatalf("cannot generate packet from address %w", err)
+		log.Fatalf("cannot generate packet from address %v", err)
 	}
 
 	// Note: This add input details
-	createAndSetInput(fundedPkt, 0, ato.previousOutput, assetId)
+	createAndSetInputIntermediate(fundedPkt, 0, inte, assetId)
 
 	// Note: This add output details
 	tapsend.PrepareOutputAssets(context.TODO(), fundedPkt)
@@ -266,17 +289,62 @@ func CreateAndSignOffchainFinalRoundTransfer(amnt uint64, assetId []byte, userTa
 	btcTransferPkt.Inputs[assetInputIdx].FinalScriptWitness = buf.Bytes()
 	signedPkt := serverTapClient.FinalizePacket(btcTransferPkt)
 
-	log.Println("Intermediate Asset Transfered Please Mine")
-	_ = serverTapClient.LogAndPublish(inte.signedPkt, inte.finalizedTransferPackets, nil,
-		inte.commitResp,
-	)
-	serverTapClient.IncomingTransferEvent(inte.addr)
+	log.Println("Intermediate Asset Transfered Please Submit and Mine")
+
+	bcoinClient := GetBitcoinClient()
+	_, err = bcoinClient.SendRawTransaction(inte.finalTx, true)
+	if err != nil {
+		log.Fatalf("cannot send raw transaction %v", err)
+	}
+
+	_, err = bcoinClient.Generate(1)
+	if err != nil {
+		log.Fatalf("cannot generate to address %v", err)
+	}
 
 	log.Println("Final Asset Transfered Please Mine")
 	_ = serverTapClient.LogAndPublish(signedPkt, finalizedTransferPackets, nil,
 		commitResp,
 	)
+	blockhash, err := bcoinClient.Generate(1)
+	if err != nil {
+		log.Fatalf("cannot generate to address %v", err)
+	}
 
-	userTapClient.IncomingTransferEvent(addr_resp)
+	block, err := bcoinClient.GetBlock(blockhash[0])
+	if err != nil {
+		log.Fatalf("cannot get block %v", err)
+	}
+
+	blockheight, err := bcoinClient.GetBlockCount()
+	if err != nil {
+		log.Fatalf("cannot get block height %v", err)
+	}
+
+	userOutput := finalizedTransferPackets[0].Outputs[1]
+	userProof := userOutput.ProofSuffix
+	userAnchorTx := userOutput.ProofSuffix.AnchorTx
+
+	proofParams := proof.BaseProofParams{
+		Block:       block,
+		Tx:          &userAnchorTx,
+		BlockHeight: uint32(blockheight),
+		TxIndex:     int(1),
+	}
+
+	err = userProof.UpdateTransitionProof(&proofParams)
+	if err != nil {
+		log.Fatalf("cannot update proof %v", err)
+	}
+
+	userProofFile, err := proof.EncodeAsProofFile(userProof)
+	if err != nil {
+		log.Fatalf("cannot enocde prooffile %v", userProofFile)
+	}
+
+	userTapClient.devclient.ImportProof(context.TODO(), &tapdevrpc.ImportProofRequest{
+		ProofFile:    userProofFile,
+		GenesisPoint: "f5461e7f2fbd14ca2524fdde6d36ef93a49a5c55a1f1fb7902d47fb15e3e894d",
+	})
 
 }
