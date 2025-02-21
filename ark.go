@@ -22,7 +22,8 @@ type ArkScript struct {
 }
 
 type ArkAssetScript struct {
-	nonces       []*musig2.Nonces
+	userNonces   []*musig2.Nonces
+	serverNonce  *musig2.Nonces
 	tapScriptKey asset.ScriptKey
 	leaves       []txscript.TapLeaf
 	tree         *txscript.IndexedTapScriptTree
@@ -32,15 +33,19 @@ type ArkAssetScript struct {
 type ArkTransferOutputDetails struct {
 	btcControlBlock *txscript.ControlBlock
 
-	userScriptKey     asset.ScriptKey
-	userInternalKey   keychain.KeyDescriptor
+	userScriptKey     []asset.ScriptKey
+	userInternalKey   []keychain.KeyDescriptor
 	serverScriptKey   asset.ScriptKey
 	serverInternalKey keychain.KeyDescriptor
 
-	arkScript      ArkScript
-	arkAssetScript ArkAssetScript
+	userTapClientList []*TapClient
+	serverTapClient   *TapClient
+	arkScript         ArkScript
+	arkAssetScript    ArkAssetScript
 
 	previousOutput *taprpc.TransferOutput
+
+	outputIndex int
 }
 
 func CreateBoardingArkScript(user, server *btcec.PublicKey, locktime uint32) (ArkScript, error) {
@@ -86,10 +91,10 @@ func CreateBoardingArkAssetScript(
 	serverBoardingNonceOpt := musig2.WithPublicKey(
 		server,
 	)
-	userNonces, _ := musig2.GenNonces(userBoardingNonceOpt)
-	serverNonces, _ := musig2.GenNonces(serverBoardingNonceOpt)
+	userNonce, _ := musig2.GenNonces(userBoardingNonceOpt)
+	serverNonce, _ := musig2.GenNonces(serverBoardingNonceOpt)
 
-	nonces := []*musig2.Nonces{userNonces, serverNonces}
+	userNonces := []*musig2.Nonces{userNonce}
 
 	musigUserServer, err := input.MuSig2CombineKeys(
 		input.MuSig2Version100RC2, []*btcec.PublicKey{
@@ -160,7 +165,7 @@ func CreateBoardingArkAssetScript(
 		controlBlock.OutputKeyYIsOdd = true
 	}
 
-	return ArkAssetScript{nonces, tapScriptKey, leaves, tree, controlBlock}
+	return ArkAssetScript{userNonces, serverNonce, tapScriptKey, leaves, tree, controlBlock}
 }
 
 func CreateRoundLeafArkScript(user, server *btcec.PublicKey, locktime uint32) (ArkScript, error) {
@@ -197,26 +202,28 @@ func CreateRoundLeafArkScript(user, server *btcec.PublicKey, locktime uint32) (A
 	return ArkScript{Left: leftLeaf, Right: rightLeaf, Branch: branch}, nil
 }
 
-func CreateRoundBrachArkAssetScript(
-	server *btcec.PublicKey, locktime uint32, users ...*btcec.PublicKey) ArkAssetScript {
-	nonces := make([]*musig2.Nonces, len(users)+1)
+func CreateRoundBranchArkAssetScript(
+	server *btcec.PublicKey, locktime uint32, users ...asset.ScriptKey) ArkAssetScript {
+	userNonces := make([]*musig2.Nonces, len(users))
+	userPubkeys := make([]*btcec.PublicKey, len(users))
 
 	for _, user := range users {
 		userBoardingNonceOpt := musig2.WithPublicKey(
-			user,
+			user.RawKey.PubKey,
 		)
 
-		userNonces, _ := musig2.GenNonces(userBoardingNonceOpt)
-		nonces = append(nonces, userNonces)
+		userNonce, _ := musig2.GenNonces(userBoardingNonceOpt)
+		userNonces = append(userNonces, userNonce)
+
+		userPubkeys = append(userPubkeys, user.RawKey.PubKey)
 	}
 	serverBoardingNonceOpt := musig2.WithPublicKey(
 		server,
 	)
 	serverNonces, _ := musig2.GenNonces(serverBoardingNonceOpt)
-	nonces = append(nonces, serverNonces)
 
 	musigUserServer, err := input.MuSig2CombineKeys(
-		input.MuSig2Version100RC2, append(users, server),
+		input.MuSig2Version100RC2, append(userPubkeys, server),
 		true, &input.MuSig2Tweaks{TaprootBIP0086Tweak: true},
 	)
 
@@ -282,14 +289,14 @@ func CreateRoundBrachArkAssetScript(
 		controlBlock.OutputKeyYIsOdd = true
 	}
 
-	return ArkAssetScript{nonces, tapScriptKey, leaves, tree, controlBlock}
+	return ArkAssetScript{userNonces, serverNonces, tapScriptKey, leaves, tree, controlBlock}
 }
 
-func CreateRoundBranchArkScript(server *btcec.PublicKey, locktime uint32, users ...*btcec.PublicKey) (ArkScript, error) {
+func CreateRoundBranchArkScript(server *btcec.PublicKey, locktime uint32, users ...keychain.KeyDescriptor) (ArkScript, error) {
 	leftLeafScript := txscript.NewScriptBuilder()
 
 	for _, user := range users {
-		leftLeafScript.AddData(schnorr.SerializePubKey(user)).
+		leftLeafScript.AddData(schnorr.SerializePubKey(user.PubKey)).
 			AddOp(txscript.OP_CHECKSIG)
 	}
 

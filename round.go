@@ -5,6 +5,7 @@ import (
 	"context"
 	"log"
 
+	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
@@ -15,6 +16,7 @@ import (
 	"github.com/lightninglabs/taproot-assets/taprpc"
 	"github.com/lightninglabs/taproot-assets/taprpc/assetwalletrpc"
 	"github.com/lightninglabs/taproot-assets/tapsend"
+	"github.com/lightningnetwork/lnd/keychain"
 )
 
 type RoundInput struct {
@@ -36,51 +38,177 @@ type RoundBoardingDetails struct {
 	boardingAmount          uint64
 }
 
-func CreateRound(roundInput RoundInput) RoundOutput {
-	rootArkScript := 
+// func CreateRound(roundInput RoundInput) RoundOutput {
+// 	rootArkScript :=
 
-	return Round{server, users, assetId, nil, make([][]wire.MsgTx, 0), boardingDetails}
-}
+// 	return Round{server, users, assetId, nil, make([][]wire.MsgTx, 0), boardingDetails}
+// }
 
-func (r *Round) FinaliseRound() {
-
-}
-
-type IntermediateOutput struct {
+type UnpublishedTransfer struct {
 	signedPkt                *psbt.Packet
-	finalizedTransferPackets []*tappsbt.VPacket
+	finalizedTransferPackets *tappsbt.VPacket
 	commitResp               *assetwalletrpc.CommitVirtualPsbtsResponse
-	addr                     *taprpc.Addr
+	addres                     *[]taprpc.Addr
 }
 
-func CreateAndSignOffchainIntermediateRoundTransfer(amnt uint64, assetId []byte, userTapClient []*TapClient,  serverTapClient *TapClient, lockHeight uint32, ato ArkTransferOutputDetails) (ArkTransferOutputDetails, IntermediateOutput) {
-	userScriptKey, userInternalKey := userTapClient.GetNextKeys()
+func extractPubNonces(userNonceList []*musig2.Nonces) [][]byte {
+	list := make([][]byte, len(userNonceList))
+	for _, nonce := range userNonceList {
+		list = append(list, nonce.PubNonce[:])
+	}
+	return list
+}
+
+func deriveAssetOutput(){
+	merkleRoot := tappsbt.ExtractCustomField(
+		anchorOut.Unknowns, tappsbt.PsbtKeyTypeOutputTaprootMerkleRoot,
+	)
+	taprootAssetRoot := tappsbt.ExtractCustomField(
+		anchorOut.Unknowns, tappsbt.PsbtKeyTypeOutputAssetRoot,
+	)
+}
+
+func deriveBtcControlBlock(packet *tappsbt.VOutput, arkScript ArkScript) {
+	btcInternalKey := asset.NUMSPubKey
+	btcControlBlock := &txscript.ControlBlock{
+		LeafVersion: txscript.BaseLeafVersion,
+		InternalKey: btcInternalKey,
+	}
+
+	// Transfer Of Round is always 0
+	transferOutput := logAndPublishResponse.Transfer.Outputs[1]
+	multiSigOutAnchor := transferOutput.Anchor
+	rightNodeHash := arkScript.Right.TapHash()
+	inclusionproof := append(rightNodeHash[:], multiSigOutAnchor.TaprootAssetRoot[:]...)
+	btcControlBlock.InclusionProof = inclusionproof
+	rootHash := btcControlBlock.RootHash(arkScript.Left.Script)
+	tapKey := txscript.ComputeTaprootOutputKey(btcInternalKey, rootHash)
+	if tapKey.SerializeCompressed()[0] ==
+		secp256k1.PubKeyFormatCompressedOdd {
+
+		btcControlBlock.OutputKeyYIsOdd = true
+	}
+}
+
+func SignAssetTransfer(ato ArkTransferOutputDetails, fundedPkt *tappsbt.VPacket) wire.TxWitness {
+	userPartialSigList := make([][]byte, len(ato.userTapClientList))
+	for index, userTapClient := range ato.userTapClientList {
+		userNonceList := ato.arkAssetScript.userNonces
+		otherNonces := extractPubNonces(append(userNonceList[:index], userNonceList[index+1:]...))
+		otherNonces = append(otherNonces, ato.arkAssetScript.serverNonce.PubNonce[:])
+		userPartialSig, _ := userTapClient.partialSignAssetTransfer(fundedPkt,
+			&ato.arkAssetScript.leaves[0], ato.userScriptKey[index].RawKey, userNonceList[index], ato.serverScriptKey.RawKey.PubKey, otherNonces)
+		userPartialSigList = append(userPartialSigList, userPartialSig)
+	}
+
+	log.Println("created asset partial sig for user")
+	otherNonces := extractPubNonces(ato.arkAssetScript.userNonces)
+	_, serverSessionId := ato.serverTapClient.partialSignAssetTransfer(fundedPkt,
+		&ato.arkAssetScript.leaves[0], ato.serverScriptKey.RawKey, ato.arkAssetScript.serverNonce, ato.userScriptKey.RawKey.PubKey, otherNonces)
+
+	log.Println("created asset partial for server")
+
+	transferAssetWitness := ato.serverTapClient.combineSigs(serverSessionId, userPartialSigList, ato.arkAssetScript.leaves[0], ato.arkAssetScript.tree, ato.arkAssetScript.controlBlock)
+	log.Println("Asset Transfer All signed")
+	return transferAssetWitness
+}
+
+func SignBtcAssetTransfer(ato ArkTransferOutputDetails, btcPacket *psbt.Packet) wire.TxWitness {
+	btcControlBlockBytes, err := ato.btcControlBlock.ToBytes()
+	if err != nil {
+		log.Fatal(err)
+	}
+	assetInputIdx := uint32(0)
+	serverBtcPartialSig := ato.serverTapClient.partialSignBtcTransfer(
+		btcTransferPkt, assetInputIdx,
+		ato.serverInternalKey, btcControlBlockBytes, ato.arkScript.Left,
+	)
+
+	txWitness := wire.TxWitness{
+		serverBtcPartialSig,
+	}
+
+	for index, userTapClient := range ato.userTapClientList {
+		userBtcPartialSig := userTapClient.partialSignBtcTransfer(
+			btcTransferPkt, assetInputIdx,
+			ato.userInternalKey[index], btcControlBlockBytes, ato.arkScript.Left,
+		)
+		txWitness = append(txWitness, userBtcPartialSig)
+	}
+	
+
+	txWitness := append(txWitness,
+		ato.arkScript.Left.Script,
+		btcControlBlockBytes,
+	)
+
+	return txWitness
+}
+
+func CreateAndSignOffchainIntermediateRoundTransfer(amnt uint64, assetId []byte, usersTapClient []*TapClient, serverTapClient *TapClient, lockHeight uint32, ato ArkTransferOutputDetails, txtree *[]UnpublishedTransfer) (ArkTransferOutputDetails, UnpublishedTransfer) {
+
+	if len(usersTapClient) == 1 {
+		unpublishedTransfer := createAndSignOffchainFinalRoundTransfer(amnt, assetId, usersTapClient[0], serverTapClient, lockHeight, ato)
+	}
+
+	mid := len(usersTapClient) / 2 // since usersTapClient is even, mid is an integer
+	leftTapClients := usersTapClient[:mid]
+	rightTapClients := usersTapClient[mid:]
+
+	deriveKeys := func(clients []*TapClient) ([]keychain.KeyDescriptor, []asset.ScriptKey) {
+		userInternalKeys := make([]keychain.KeyDescriptor, len(usersTapClient))
+		userScriptKeys := make([]asset.ScriptKey, len(usersTapClient))
+
+		for _, userTapClient := range usersTapClient {
+			userScriptKey, userInternalKey := userTapClient.GetNextKeys()
+
+			userInternalKeys = append(userInternalKeys, userInternalKey)
+			userScriptKeys = append(userScriptKeys, userScriptKey)
+		}
+
+		return userInternalKeys, userScriptKeys
+	}
+
 	serverScriptKey, serverInternalKey := serverTapClient.GetNextKeys()
 
-	if len(userTapClient) == 1 {
-		createAndSignOffchainFinalRoundTransfer(amnt, assetId, userTapClient[0], serverTapClient)
-	}
-
-	// 1. Create Both Bording Ark Script and Boarding Ark Asset Script
-	arkScript, err := CreateRoundLeafArkScript(userInternalKey.PubKey, serverInternalKey.PubKey, lockHeight)
+	// derive Left Branch Details
+	leftUserInternalKeys, leftUserAssetKeys := deriveKeys(leftTapClients)
+	leftArkScript, err := CreateRoundBranchArkScript(serverInternalKey.PubKey, lockHeight, leftUserInternalKeys...)
 	if err != nil {
 		log.Fatal(err)
 	}
-	arkAssetScript := CreateRoundLeafArkAssetScript(userScriptKey.RawKey.PubKey, serverScriptKey.RawKey.PubKey, lockHeight)
+	leftArkAssetScript := CreateRoundBranchArkAssetScript(serverScriptKey.RawKey.PubKey, lockHeight, leftUserAssetKeys...)
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	addr_resp, err := serverTapClient.GetBoardingAddress(arkScript.Branch, arkAssetScript.tapScriptKey, assetId, amnt)
+	leftAddrResp, err := serverTapClient.GetBoardingAddress(leftArkScript.Branch, leftArkAssetScript.tapScriptKey, assetId, amnt/2)
 	if err != nil {
 		log.Fatalf("cannot get address %v", err)
 	}
-	addr, err := address.DecodeAddress(addr_resp.Encoded, &address.RegressionNetTap)
+	leftAddr, err := address.DecodeAddress(leftAddrResp.Encoded, &address.RegressionNetTap)
+	if err != nil {
+		log.
+
+	// derive Right Branch Details
+	rightUserInternalKeys, rightUserAssetKeys := deriveKeys(rightTapClients)
+	rightArkScript, err := CreateRoundBranchArkScript(serverInternalKey.PubKey, lockHeight, rightUserInternalKeys...)
+	if err != nil {
+		log.Fatal(err)
+	}
+	rightArkAssetScript := CreateRoundBranchArkAssetScript(serverScriptKey.RawKey.PubKey, lockHeight, rightUserAssetKeys...)
+	if err != nil {
+		log.Fatal(err)
+	}
+	rightAddrResp, err := serverTapClient.GetBoardingAddress(rightArkScript.Branch, rightArkAssetScript.tapScriptKey, assetId, amnt/2)
+	if err != nil {
+		log.Fatalf("cannot get address %v", err)
+	}
+	rightAddr, err := address.DecodeAddress(rightAddrResp.Encoded, &address.RegressionNetTap)
 	if err != nil {
 		log.Fatalf("cannot decode address %v", err)
 	}
-	addresses := make([]*address.Tap, 1)
-	addresses[0] = addr
+
+	addresses := []*address.Tap{leftAddr, rightAddr}
 
 	// Note: This create a VPacket
 	fundedPkt, err := tappsbt.FromAddresses(addresses, 1)
@@ -90,22 +218,13 @@ func CreateAndSignOffchainIntermediateRoundTransfer(amnt uint64, assetId []byte,
 	}
 
 	// Note: This add input details
-	createAndSetInput(fundedPkt, 0, ato.previousOutput, assetId)
+	createAndSetInput(fundedPkt, ato.outputIndex, ato.previousOutput, assetId)
 
 	// Note: This add output details
 	tapsend.PrepareOutputAssets(context.TODO(), fundedPkt)
 
-	_, userSessionId := userTapClient.partialSignAssetTransfer(fundedPkt,
-		&ato.arkAssetScript.leaves[0], ato.userScriptKey.RawKey, ato.arkAssetScript.userNonce, ato.serverScriptKey.RawKey.PubKey, ato.arkAssetScript.serverNonce.PubNonce)
-
-	log.Println("created asset partial sig for user")
-
-	serverPartialSig, _ := serverTapClient.partialSignAssetTransfer(fundedPkt,
-		&ato.arkAssetScript.leaves[0], ato.serverScriptKey.RawKey, ato.arkAssetScript.serverNonce, ato.userScriptKey.RawKey.PubKey, ato.arkAssetScript.userNonce.PubNonce)
-
-	log.Println("created asset partial for server")
-
-	transferAssetWitness := userTapClient.combineSigs(userSessionId, serverPartialSig, ato.arkAssetScript.leaves[0], ato.arkAssetScript.tree, ato.arkAssetScript.controlBlock)
+	// Ensure To Sign Asset Transfer Transaction
+	transferAssetWitness := SignAssetTransfer(ato, fundedPkt)
 
 	// update transferAsset Witnesss [Nothing Needs To Change]
 	for idx := range fundedPkt.Outputs {
@@ -131,28 +250,10 @@ func CreateAndSignOffchainIntermediateRoundTransfer(amnt uint64, assetId []byte,
 	)
 
 	// sign Btc Transaction
-	btcControlBlockBytes, err := ato.btcControlBlock.ToBytes()
-	if err != nil {
-		log.Fatal(err)
-	}
-	assetInputIdx := uint32(0)
-	serverBtcPartialSig := serverTapClient.partialSignBtcTransfer(
-		btcTransferPkt, assetInputIdx,
-		ato.serverInternalKey, btcControlBlockBytes, ato.arkScript.Left,
-	)
-	userBtcPartialSig := userTapClient.partialSignBtcTransfer(
-		btcTransferPkt, assetInputIdx,
-		ato.userInternalKey, btcControlBlockBytes, ato.arkScript.Left,
-	)
-
-	txWitness := wire.TxWitness{
-		serverBtcPartialSig,
-		userBtcPartialSig,
-		ato.arkScript.Left.Script,
-		btcControlBlockBytes,
-	}
+	transferBtcAssetWitness := SignBtcAssetTransfer(ato, transferBtcPkt)
+	
 	var buf bytes.Buffer
-	err = psbt.WriteTxWitness(&buf, txWitness)
+	err = psbt.WriteTxWitness(&buf, transferBtcAssetWitness)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -160,9 +261,8 @@ func CreateAndSignOffchainIntermediateRoundTransfer(amnt uint64, assetId []byte,
 	btcTransferPkt.Inputs[assetInputIdx].FinalScriptWitness = buf.Bytes()
 	signedPkt := serverTapClient.FinalizePacket(btcTransferPkt)
 
-	logAndPublishResponse := serverTapClient.LogAndPublish(signedPkt, finalizedTransferPackets, nil,
-		commitResp,
-	)
+	unpublishedTransfer :=  UnpublishedTransfer { signedPkt, finalizedTransferPackets[0], commitResp, []*taprpc.Addr {leftAddr, rightAddr}}
+
 
 	// spend from Boarding Address
 	btcInternalKey := asset.NUMSPubKey
@@ -185,11 +285,11 @@ func CreateAndSignOffchainIntermediateRoundTransfer(amnt uint64, assetId []byte,
 		btcControlBlock.OutputKeyYIsOdd = true
 	}
 
-	return ArkTransferOutputDetails{btcControlBlock, userScriptKey, userInternalKey, serverScriptKey, serverInternalKey, arkScript, arkAssetScript, transferOutput}, IntermediateOutput{signedPkt, finalizedTransferPackets, commitResp, addr_resp}
+	return ArkTransferOutputDetails{btcControlBlock, userScriptKey, userInternalKey, serverScriptKey, serverInternalKey, arkScript, arkAssetScript, transferOutput}, UnpublishedTransfer{signedPkt, finalizedTransferPackets, commitResp, addr_resp}
 
 }
 
-func createAndSignOffchainFinalRoundTransfer(amnt uint64, assetId []byte, userTapClient, serverTapClient *TapClient, lockHeight uint32, ato ArkTransferOutputDetails, inte IntermediateOutput) {
+func createAndSignOffchainFinalRoundTransfer(amnt uint64, assetId []byte, userTapClient, serverTapClient *TapClient, lockHeight uint32, ato ArkTransferOutputDetails) UnpublishedTransfer {
 
 	addr_resp, err := userTapClient.client.NewAddr(context.TODO(), &taprpc.NewAddrRequest{
 		AssetId: assetId,
@@ -283,17 +383,11 @@ func createAndSignOffchainFinalRoundTransfer(amnt uint64, assetId []byte, userTa
 	btcTransferPkt.Inputs[assetInputIdx].FinalScriptWitness = buf.Bytes()
 	signedPkt := serverTapClient.FinalizePacket(btcTransferPkt)
 
-	log.Println("Intermediate Asset Transfered Please Mine")
-	_ = serverTapClient.LogAndPublish(inte.signedPkt, inte.finalizedTransferPackets, nil,
-		inte.commitResp,
-	)
-	serverTapClient.IncomingTransferEvent(inte.addr)
-
 	log.Println("Final Asset Transfered Please Mine")
 	_ = serverTapClient.LogAndPublish(signedPkt, finalizedTransferPackets, nil,
 		commitResp,
 	)
 
-	userTapClient.IncomingTransferEvent(addr_resp)
+	return UnpublishedTransfer{signedPkt, finalizedTransferPackets, addr_resp}
 
 }

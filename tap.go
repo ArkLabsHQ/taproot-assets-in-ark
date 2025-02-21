@@ -209,15 +209,15 @@ func (cl *TapClient) createMuSig2Session(
 	return sess.SessionId
 }
 
-func (cl *TapClient) combineSigs(sessID,
-	otherPartialSig []byte, leafToSign txscript.TapLeaf,
+func (cl *TapClient) combineSigs(sessID []byte,
+	otherPartialSigList [][]byte, leafToSign txscript.TapLeaf,
 	tree *txscript.IndexedTapScriptTree,
 	controlBlock *txscript.ControlBlock) wire.TxWitness {
 
 	resp, err := cl.lndClient.client.MuSig2CombineSig(
 		context.TODO(), &signrpc.MuSig2CombineSigRequest{
 			SessionId:              sessID,
-			OtherPartialSignatures: [][]byte{otherPartialSig},
+			OtherPartialSignatures: otherPartialSigList,
 		},
 	)
 
@@ -466,9 +466,9 @@ func (cl *TapClient) partialSignBtcTransfer(pkt *psbt.Packet, inputIndex uint32,
 }
 
 func (cl *TapClient) partialSignAssetTransfer(assetTransferPacket *tappsbt.VPacket, assetLeaf *txscript.TapLeaf, localScriptKeyDescriptor keychain.KeyDescriptor,
-	localNonces *musig2.Nonces, remoteScriptKey *secp256k1.PublicKey, remoteNonce [66]byte) ([]byte, []byte) {
+	localNonces *musig2.Nonces, remoteScriptKey *secp256k1.PublicKey, remoteNonceList [][]byte) ([]byte, []byte) {
 	sessID := cl.createMuSig2Session(localScriptKeyDescriptor, remoteScriptKey.SerializeCompressed(), *localNonces,
-		[][]byte{remoteNonce[:]},
+		remoteNonceList,
 	)
 
 	partialSigner := &muSig2PartialSigner{
