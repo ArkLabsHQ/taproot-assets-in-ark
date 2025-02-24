@@ -23,7 +23,8 @@ import (
 type UnpulishedTransfer struct {
 	finalTx          *wire.MsgTx
 	outpoint         *wire.OutPoint
-	proof            *proof.Proof
+	transferProof    *proof.Proof
+	changeProof      *proof.Proof
 	merkleRoot       []byte
 	taprootSibling   []byte
 	internalKey      *btcec.PublicKey
@@ -32,7 +33,7 @@ type UnpulishedTransfer struct {
 	taprootAssetRoot []byte
 }
 
-func DeriveUnpublishedOutput(btcPacket *psbt.Packet, vout *tappsbt.VOutput) UnpulishedTransfer {
+func DeriveUnpublishedOutput(btcPacket *psbt.Packet, vout *tappsbt.VOutput, change *tappsbt.VOutput) UnpulishedTransfer {
 
 	proof := vout.ProofSuffix
 	internalKey := vout.AnchorOutputInternalKey
@@ -58,7 +59,7 @@ func DeriveUnpublishedOutput(btcPacket *psbt.Packet, vout *tappsbt.VOutput) Unpu
 
 	anchorValue := btcPacket.UnsignedTx.TxOut[vout.AnchorOutputIndex].Value
 
-	return UnpulishedTransfer{finalTx, outpoint, proof, merkleRoot, taprootSibling, internalKey, scriptKey, anchorValue, taprootAssetRoot}
+	return UnpulishedTransfer{finalTx, outpoint, proof, change.ProofSuffix, merkleRoot, taprootSibling, internalKey, scriptKey, anchorValue, taprootAssetRoot}
 
 }
 
@@ -177,7 +178,7 @@ func CreateAndSignOffchainIntermediateRoundTransfer(amnt uint64, assetId []byte,
 	}
 
 	// Real Transfer is always output 1
-	unpublishedTransaction := DeriveUnpublishedOutput(signedPkt, finalizedTransferPackets[0].Outputs[1])
+	unpublishedTransaction := DeriveUnpublishedOutput(signedPkt, finalizedTransferPackets[0].Outputs[1], finalizedTransferPackets[0].Outputs[0])
 
 	log.Println(unpublishedTransaction.taprootAssetRoot)
 	rightNodeHash := arkScript.Right.TapHash()
@@ -289,6 +290,7 @@ func CreateAndSignOffchainFinalRoundTransfer(amnt uint64, assetId []byte, userTa
 	btcTransferPkt.Inputs[assetInputIdx].FinalScriptWitness = buf.Bytes()
 	signedPkt := serverTapClient.FinalizePacket(btcTransferPkt)
 
+	// Publish Intermediate Transaction and Mine
 	log.Println("Intermediate Asset Transfered Please Submit and Mine")
 
 	bcoinClient := GetBitcoinClient()
@@ -302,32 +304,10 @@ func CreateAndSignOffchainFinalRoundTransfer(amnt uint64, assetId []byte, userTa
 		log.Fatalf("cannot generate address %v", err)
 	}
 	maxretries := int64(3)
-	_, err = bcoinClient.GenerateToAddress(1, address1, &maxretries)
-	if err != nil {
-		log.Fatalf("cannot generate to address %v", err)
-	}
-
-	log.Println("Final Asset Transfered Please Mine")
-	_ = serverTapClient.LogAndPublish(signedPkt, finalizedTransferPackets, nil,
-		commitResp,
-	)
-
-	// userTapClient.IncomingTransferEvent(addr_resp)
-
-	address1, err = bcoinClient.GetNewAddress("")
-	if err != nil {
-		log.Fatalf("cannot generate address %v", err)
-	}
-	maxretries = int64(3)
 	blockhash, err := bcoinClient.GenerateToAddress(1, address1, &maxretries)
 	if err != nil {
 		log.Fatalf("cannot generate to address %v", err)
 	}
-
-	log.Println("Final Asset Transfered Please Mine")
-	_ = serverTapClient.LogAndPublish(signedPkt, finalizedTransferPackets, nil,
-		commitResp,
-	)
 
 	block, err := bcoinClient.GetBlock(blockhash[0])
 	if err != nil {
@@ -339,34 +319,62 @@ func CreateAndSignOffchainFinalRoundTransfer(amnt uint64, assetId []byte, userTa
 		log.Fatalf("cannot get block height %v", err)
 	}
 
-	userOutput := finalizedTransferPackets[0].Outputs[1]
-	userProof := userOutput.ProofSuffix
-	userAnchorTx := userOutput.ProofSuffix.AnchorTx
+	intermediateTransferProof := inte.transferProof
+	intermediateChangeProof := inte.changeProof
+	intermediateAnchorTx := intermediateTransferProof.AnchorTx
 
 	proofParams := proof.BaseProofParams{
 		Block:       block,
-		Tx:          &userAnchorTx,
+		Tx:          &intermediateAnchorTx,
 		BlockHeight: uint32(blockheight),
 		TxIndex:     int(1),
 	}
 
-	err = userProof.UpdateTransitionProof(&proofParams)
+	err = intermediateTransferProof.UpdateTransitionProof(&proofParams)
 	if err != nil {
-		log.Fatalf("cannot update proof %v", err)
+		log.Fatalf("cannot update transfer proof %v", err)
 	}
 
-	userProofFile, err := proof.EncodeAsProofFile(userProof)
+	err = intermediateChangeProof.UpdateTransitionProof(&proofParams)
 	if err != nil {
-		log.Fatalf("cannot enocde prooffile %v", userProofFile)
+		log.Fatalf("cannot update change proof %v", err)
 	}
 
-	_, err = userTapClient.devclient.ImportProof(context.TODO(), &tapdevrpc.ImportProofRequest{
-		ProofFile:    userProofFile,
-		GenesisPoint: "f5461e7f2fbd14ca2524fdde6d36ef93a49a5c55a1f1fb7902d47fb15e3e894d",
+	proofFile, err := proof.NewFile(proof.V0, *intermediateChangeProof, *intermediateTransferProof)
+	if err != nil {
+		log.Fatalf("cannot create transfer proof file %v", err)
+	}
+
+	encodedProofFile, err := proof.EncodeFile(proofFile)
+	if err != nil {
+		log.Fatalf("cannot encode proof File %v", err)
+	}
+
+	_, err = serverTapClient.universeclient.ImportProof(context.TODO(), &tapdevrpc.ImportProofRequest{
+		ProofFile:    encodedProofFile,
+		GenesisPoint: "b24b324bf63cc7d348d35a921af45f70822cf261cbb2324215ca0a8653b5776c:2",
 	})
 
 	if err != nil {
-		log.Fatalf("cannot print file %v", err)
+		log.Fatalf("cannot import proof %v", err)
+	}
+
+	// Log and Publish Final Transaction
+	log.Println("Final Asset Transfered Please Mine")
+	_ = serverTapClient.LogAndPublish(signedPkt, finalizedTransferPackets, nil,
+		commitResp,
+	)
+
+	//userTapClient.IncomingTransferEvent(addr_resp)
+
+	address1, err = bcoinClient.GetNewAddress("")
+	if err != nil {
+		log.Fatalf("cannot generate address %v", err)
+	}
+	maxretries = int64(3)
+	_, err = bcoinClient.GenerateToAddress(1, address1, &maxretries)
+	if err != nil {
+		log.Fatalf("cannot generate to address %v", err)
 	}
 
 }

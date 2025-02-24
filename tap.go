@@ -52,11 +52,11 @@ func deserializeVPacket(packetBytes []byte) *tappsbt.VPacket {
 }
 
 type TapClient struct {
-	client      taprpc.TaprootAssetsClient
-	wallet      assetwalletrpc.AssetWalletClient
-	devclient   tapdevrpc.TapDevClient
-	lndClient   LndClient
-	closeClient func()
+	client         taprpc.TaprootAssetsClient
+	wallet         assetwalletrpc.AssetWalletClient
+	universeclient tapdevrpc.TapDevClient
+	lndClient      LndClient
+	closeClient    func()
 }
 
 func InitTapClient(hostPort, tapdport, tlsData, macaroonData string, lndClient LndClient) TapClient {
@@ -69,8 +69,8 @@ func InitTapClient(hostPort, tapdport, tlsData, macaroonData string, lndClient L
 	cleanUp := func() {
 		clientConn.Close()
 	}
-	devclient := tapdevrpc.NewTapDevClient(clientConn)
-	return TapClient{client: taprpc.NewTaprootAssetsClient(clientConn), wallet: assetwalletrpc.NewAssetWalletClient(clientConn), devclient: devclient,
+	universeclient := tapdevrpc.NewTapDevClient(clientConn)
+	return TapClient{client: taprpc.NewTaprootAssetsClient(clientConn), wallet: assetwalletrpc.NewAssetWalletClient(clientConn), universeclient: universeclient,
 		closeClient: cleanUp,
 		lndClient:   lndClient,
 	}
@@ -736,13 +736,13 @@ func createAndSetInputIntermediate(vPkt *tappsbt.VPacket, idx int,
 			MerkleRoot:       roundDetails.merkleRoot,
 			TapscriptSibling: roundDetails.taprootSibling,
 		},
-		Proof: roundDetails.proof,
+		Proof: roundDetails.transferProof,
 		PInput: psbt.PInput{
 			SighashType: txscript.SigHashDefault,
 		},
 	}
 	//Verify If This is the best way
-	vPkt.SetInputAsset(idx, &roundDetails.proof.Asset)
+	vPkt.SetInputAsset(idx, &roundDetails.transferProof.Asset)
 
 	return nil
 }
