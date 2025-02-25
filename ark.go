@@ -42,6 +42,8 @@ type ArkTransferOutputDetails struct {
 	arkAssetScript ArkAssetScript
 
 	previousOutput *taprpc.TransferOutput
+
+	addr *taprpc.Addr
 }
 
 func CreateBoardingArkScript(user, server *btcec.PublicKey, locktime uint32) (ArkScript, error) {

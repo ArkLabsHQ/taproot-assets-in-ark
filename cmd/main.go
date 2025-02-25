@@ -42,7 +42,7 @@ func main() {
 	currentBlockHeight := 300
 	lockBlockHeight := currentBlockHeight + 4320
 
-	assetId, _ := hex.DecodeString("fb91a365da0944b4c3bba1175a1185505085ee29c19c99efb1f32182250899e9")
+	assetId, _ := hex.DecodeString("f576966f62b8dd25ad004d642d1d4c73560e2160da9f0c91510d72cfcec280a0")
 	ammt := 10
 
 	userLndClient := taponark.InitLndClient(userLndRpcHostPort, userLndRpcPort, userLndTLSCert, userLndMacaroon)

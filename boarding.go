@@ -70,7 +70,7 @@ func SpendToBoardingTransaction(assetId []byte, amnt uint64, lockHeight uint32, 
 	}
 	serverTapClient.IncomingTransferEvent(addr)
 
-	return ArkTransferOutputDetails{btcControlBlock, userScriptKey, userInternalKey, serverScriptKey, serverInternalKey, arkScript, arkAssetScript, transferOutput}
+	return ArkTransferOutputDetails{btcControlBlock, userScriptKey, userInternalKey, serverScriptKey, serverInternalKey, arkScript, arkAssetScript, transferOutput, addr}
 }
 
 // func SpendFromBoardingTransaction(spendAddr *taprpc.Addr, userTapClient, serverTapClient *TapClient, outDetails ArkBoardingTransferOutputDetails) ProofOutputDetail {

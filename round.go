@@ -192,7 +192,7 @@ func CreateAndSignOffchainIntermediateRoundTransfer(amnt uint64, assetId []byte,
 		btcControlBlock.OutputKeyYIsOdd = true
 	}
 
-	return ArkTransferOutputDetails{btcControlBlock, userScriptKey, userInternalKey, serverScriptKey, serverInternalKey, arkScript, arkAssetScript, nil}, unpublishedTransaction
+	return ArkTransferOutputDetails{btcControlBlock, userScriptKey, userInternalKey, serverScriptKey, serverInternalKey, arkScript, arkAssetScript, nil, ato.addr}, unpublishedTransaction
 
 }
 
@@ -340,19 +340,52 @@ func CreateAndSignOffchainFinalRoundTransfer(amnt uint64, assetId []byte, userTa
 		log.Fatalf("cannot update change proof %v", err)
 	}
 
-	proofFile, err := proof.NewFile(proof.V0, *intermediateChangeProof, *intermediateTransferProof)
+	fullproof, err := serverTapClient.client.ExportProof(context.TODO(), &taprpc.ExportProofRequest{
+		AssetId:   assetId,
+		ScriptKey: ato.addr.ScriptKey,
+	})
+
 	if err != nil {
-		log.Fatalf("cannot create transfer proof file %v", err)
+		log.Fatalf("cannot get full proof %v", err)
 	}
 
-	encodedProofFile, err := proof.EncodeFile(proofFile)
+	decodedFullProofFile, err := proof.DecodeFile(fullproof.RawProofFile)
+	if err != nil {
+		log.Fatalf("cannot fully decode proof file %v", err)
+	}
+
+	copyOfDecodedProof, err := proof.DecodeFile(fullproof.RawProofFile)
+	if err != nil {
+		log.Fatalf("cannot fully decode proof file %v", err)
+	}
+	err = decodedFullProofFile.AppendProof(*intermediateTransferProof)
+	if err != nil {
+		log.Fatalf("cannot fully append proof file %v", err)
+	}
+
+	err = copyOfDecodedProof.AppendProof(*intermediateChangeProof)
+	if err != nil {
+		log.Fatalf("cannot fully append proof file %v", err)
+	}
+
+	encodedChangeProofFile, err := proof.EncodeFile(copyOfDecodedProof)
+	if err != nil {
+		log.Fatalf("cannot encode proof File %v", err)
+	}
+
+	encodedTransferProofFile, err := proof.EncodeFile(decodedFullProofFile)
 	if err != nil {
 		log.Fatalf("cannot encode proof File %v", err)
 	}
 
 	_, err = serverTapClient.universeclient.ImportProof(context.TODO(), &tapdevrpc.ImportProofRequest{
-		ProofFile:    encodedProofFile,
-		GenesisPoint: "b24b324bf63cc7d348d35a921af45f70822cf261cbb2324215ca0a8653b5776c:2",
+		ProofFile:    encodedChangeProofFile,
+		GenesisPoint: fullproof.GenesisPoint,
+	})
+
+	_, err = serverTapClient.universeclient.ImportProof(context.TODO(), &tapdevrpc.ImportProofRequest{
+		ProofFile:    encodedTransferProofFile,
+		GenesisPoint: fullproof.GenesisPoint,
 	})
 
 	if err != nil {
