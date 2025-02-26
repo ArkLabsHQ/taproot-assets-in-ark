@@ -711,7 +711,7 @@ func createAndSetInput(vPkt *tappsbt.VPacket, idx int,
 }
 
 func createAndSetInputIntermediate(vPkt *tappsbt.VPacket, idx int,
-	roundDetails UnpulishedTransfer, assetId []byte) error {
+	roundDetails ChainTransfer, assetId []byte) error {
 
 	// At this point, we have a valid "coin" to spend in the commitment, so
 	// we'll add the relevant information to the virtual TX's input.

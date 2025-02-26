@@ -7,18 +7,24 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
+	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/txscript"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/lightninglabs/taproot-assets/asset"
+	"github.com/lightninglabs/taproot-assets/proof"
+	"github.com/lightninglabs/taproot-assets/tappsbt"
 	"github.com/lightninglabs/taproot-assets/taprpc"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 )
 
+const LOCK_BLOCK_HEIGHT = 4320
+
 type ArkScript struct {
-	Left   txscript.TapLeaf
-	Right  txscript.TapLeaf
-	Branch txscript.TapBranch
+	cooperativeSpend txscript.TapLeaf
+	unilateralSpend  txscript.TapLeaf
+	Branch           txscript.TapBranch
 }
 
 type ArkAssetScript struct {
@@ -30,7 +36,7 @@ type ArkAssetScript struct {
 	controlBlock *txscript.ControlBlock
 }
 
-type ArkTransferOutputDetails struct {
+type ArkTransfer struct {
 	btcControlBlock *txscript.ControlBlock
 
 	userScriptKey     asset.ScriptKey
@@ -40,13 +46,38 @@ type ArkTransferOutputDetails struct {
 
 	arkScript      ArkScript
 	arkAssetScript ArkAssetScript
-
-	previousOutput *taprpc.TransferOutput
-
-	addr *taprpc.Addr
 }
 
-func CreateBoardingArkScript(user, server *btcec.PublicKey, locktime uint32) (ArkScript, error) {
+type ChainTransfer struct {
+	finalTx          *wire.MsgTx
+	outpoint         *wire.OutPoint
+	transferProof    *proof.Proof
+	changeProof      *proof.Proof
+	merkleRoot       []byte
+	taprootSibling   []byte
+	internalKey      *btcec.PublicKey
+	scriptKey        asset.ScriptKey
+	anchorValue      int64
+	taprootAssetRoot []byte
+}
+
+type ArkBoardingTransfer struct {
+	arkTransferDetails ArkTransfer
+	previousOutput     *taprpc.TransferOutput
+	boardingAmount     uint64
+	user               *TapClient
+}
+
+type ArkRoundChainTransfer struct {
+	arkTransferDetails  ArkTransfer
+	unpublishedTransfer ChainTransfer
+}
+
+type ArkRoundTransfer struct {
+	unpublishedTransaction []ChainTransfer
+}
+
+func CreateBoardingArkScript(user, server *btcec.PublicKey) (ArkScript, error) {
 	leftLeafScript, err := txscript.NewScriptBuilder().
 		AddData(schnorr.SerializePubKey(user)).
 		AddOp(txscript.OP_CHECKSIG).
@@ -63,7 +94,7 @@ func CreateBoardingArkScript(user, server *btcec.PublicKey, locktime uint32) (Ar
 	leftLeaf := txscript.NewTapLeaf(txscript.BaseLeafVersion, leftLeafScript)
 
 	rightLeafScript, err := txscript.NewScriptBuilder().
-		AddInt64(int64(locktime)).
+		AddInt64(int64(LOCK_BLOCK_HEIGHT)).
 		AddOp(txscript.OP_CHECKLOCKTIMEVERIFY).
 		AddData(schnorr.SerializePubKey(user)).
 		AddOp(txscript.OP_CHECKSIG).
@@ -77,11 +108,11 @@ func CreateBoardingArkScript(user, server *btcec.PublicKey, locktime uint32) (Ar
 
 	branch := txscript.NewTapBranch(leftLeaf, rightLeaf)
 
-	return ArkScript{Left: leftLeaf, Right: rightLeaf, Branch: branch}, nil
+	return ArkScript{cooperativeSpend: leftLeaf, unilateralSpend: rightLeaf, Branch: branch}, nil
 }
 
 func CreateBoardingArkAssetScript(
-	user, server *btcec.PublicKey, locktime uint32) ArkAssetScript {
+	user, server *btcec.PublicKey) ArkAssetScript {
 
 	userBoardingNonceOpt := musig2.WithPublicKey(
 		user,
@@ -115,7 +146,7 @@ func CreateBoardingArkAssetScript(
 	}
 
 	unilateralExit, err := txscript.NewScriptBuilder().
-		AddInt64(int64(locktime)).
+		AddInt64(int64(LOCK_BLOCK_HEIGHT)).
 		AddOp(txscript.OP_CHECKLOCKTIMEVERIFY).
 		AddData(schnorr.SerializePubKey(user)).
 		AddOp(txscript.OP_CHECKSIG).
@@ -156,7 +187,7 @@ func CreateBoardingArkAssetScript(
 	return ArkAssetScript{userNonces, serverNonces, tapScriptKey, leaves, tree, controlBlock}
 }
 
-func CreateRoundArkScript(user, server *btcec.PublicKey, locktime uint32) (ArkScript, error) {
+func CreateRoundArkScript(user, server *btcec.PublicKey) (ArkScript, error) {
 	leftLeafScript, err := txscript.NewScriptBuilder().
 		AddData(schnorr.SerializePubKey(user)).
 		AddOp(txscript.OP_CHECKSIG).
@@ -173,7 +204,7 @@ func CreateRoundArkScript(user, server *btcec.PublicKey, locktime uint32) (ArkSc
 	leftLeaf := txscript.NewTapLeaf(txscript.BaseLeafVersion, leftLeafScript)
 
 	rightLeafScript, err := txscript.NewScriptBuilder().
-		AddInt64(int64(locktime)).
+		AddInt64(int64(LOCK_BLOCK_HEIGHT)).
 		AddOp(txscript.OP_CHECKLOCKTIMEVERIFY).
 		AddData(schnorr.SerializePubKey(server)).
 		AddOp(txscript.OP_CHECKSIG).
@@ -187,11 +218,11 @@ func CreateRoundArkScript(user, server *btcec.PublicKey, locktime uint32) (ArkSc
 
 	branch := txscript.NewTapBranch(leftLeaf, rightLeaf)
 
-	return ArkScript{Left: leftLeaf, Right: rightLeaf, Branch: branch}, nil
+	return ArkScript{cooperativeSpend: leftLeaf, unilateralSpend: rightLeaf, Branch: branch}, nil
 }
 
 func CreateRoundArkAssetScript(
-	user, server *btcec.PublicKey, locktime uint32) ArkAssetScript {
+	user, server *btcec.PublicKey) ArkAssetScript {
 
 	userBoardingNonceOpt := musig2.WithPublicKey(
 		user,
@@ -225,7 +256,7 @@ func CreateRoundArkAssetScript(
 	}
 
 	sweep, err := txscript.NewScriptBuilder().
-		AddInt64(int64(locktime)).
+		AddInt64(int64(LOCK_BLOCK_HEIGHT)).
 		AddOp(txscript.OP_CHECKLOCKTIMEVERIFY).
 		AddData(schnorr.SerializePubKey(server)).
 		AddOp(txscript.OP_CHECKSIG).
@@ -264,4 +295,57 @@ func CreateRoundArkAssetScript(
 	}
 
 	return ArkAssetScript{userNonces, serverNonces, tapScriptKey, leaves, tree, controlBlock}
+}
+
+func CreateAndInsertAssetWitness(arkTransferDetails ArkTransfer, fundedPkt *tappsbt.VPacket, user, server *TapClient) {
+	_, serverSessionId := server.partialSignAssetTransfer(fundedPkt,
+		&arkTransferDetails.arkAssetScript.leaves[0], arkTransferDetails.serverScriptKey.RawKey, arkTransferDetails.arkAssetScript.serverNonce, arkTransferDetails.userScriptKey.RawKey.PubKey, arkTransferDetails.arkAssetScript.userNonce.PubNonce)
+
+	userPartialSig, _ := user.partialSignAssetTransfer(fundedPkt,
+		&arkTransferDetails.arkAssetScript.leaves[0], arkTransferDetails.userScriptKey.RawKey, arkTransferDetails.arkAssetScript.userNonce, arkTransferDetails.serverScriptKey.RawKey.PubKey, arkTransferDetails.arkAssetScript.serverNonce.PubNonce)
+
+	log.Println("created asset partial sig for user")
+
+	log.Println("created asset partial for server")
+
+	transferAssetWitness := server.combineSigs(serverSessionId, userPartialSig, arkTransferDetails.arkAssetScript.leaves[0], arkTransferDetails.arkAssetScript.tree, arkTransferDetails.arkAssetScript.controlBlock)
+
+	// update transferAsset Witnesss [Nothing Needs To Change]
+	for idx := range fundedPkt.Outputs {
+		asset := fundedPkt.Outputs[idx].Asset
+		firstPrevWitness := &asset.PrevWitnesses[0]
+		if asset.HasSplitCommitmentWitness() {
+			rootAsset := firstPrevWitness.SplitCommitment.RootAsset
+			firstPrevWitness = &rootAsset.PrevWitnesses[0]
+		}
+		firstPrevWitness.TxWitness = transferAssetWitness
+	}
+
+	changeOutput := fundedPkt.Outputs[CHANGE_OUTPUT_INDEX]
+	changeOutput.AnchorOutputInternalKey = asset.NUMSPubKey
+}
+
+func CreateBtcWitness(arkTransferDetails ArkTransfer, btcPacket *psbt.Packet, user, server *TapClient) wire.TxWitness {
+	btcControlBlockBytes, err := arkTransferDetails.btcControlBlock.ToBytes()
+	if err != nil {
+		log.Fatal(err)
+	}
+	assetInputIdx := uint32(TRANSFER_INPUT_INDEX)
+	serverBtcPartialSig := server.partialSignBtcTransfer(
+		btcPacket, assetInputIdx,
+		arkTransferDetails.serverInternalKey, btcControlBlockBytes, arkTransferDetails.arkScript.cooperativeSpend,
+	)
+	userBtcPartialSig := user.partialSignBtcTransfer(
+		btcPacket, assetInputIdx,
+		arkTransferDetails.userInternalKey, btcControlBlockBytes, arkTransferDetails.arkScript.cooperativeSpend,
+	)
+
+	txWitness := wire.TxWitness{
+		serverBtcPartialSig,
+		userBtcPartialSig,
+		arkTransferDetails.arkScript.cooperativeSpend.Script,
+		btcControlBlockBytes,
+	}
+
+	return txWitness
 }

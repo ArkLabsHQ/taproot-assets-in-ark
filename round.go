@@ -5,14 +5,8 @@ import (
 	"context"
 	"log"
 
-	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/psbt"
-	"github.com/btcsuite/btcd/txscript"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/lightninglabs/taproot-assets/address"
-	"github.com/lightninglabs/taproot-assets/asset"
-	"github.com/lightninglabs/taproot-assets/commitment"
 	"github.com/lightninglabs/taproot-assets/proof"
 	"github.com/lightninglabs/taproot-assets/tappsbt"
 	"github.com/lightninglabs/taproot-assets/taprpc"
@@ -20,64 +14,62 @@ import (
 	"github.com/lightninglabs/taproot-assets/tapsend"
 )
 
-type UnpulishedTransfer struct {
-	finalTx          *wire.MsgTx
-	outpoint         *wire.OutPoint
-	transferProof    *proof.Proof
-	changeProof      *proof.Proof
-	merkleRoot       []byte
-	taprootSibling   []byte
-	internalKey      *btcec.PublicKey
-	scriptKey        asset.ScriptKey
-	anchorValue      int64
-	taprootAssetRoot []byte
-}
-
-func DeriveUnpublishedOutput(btcPacket *psbt.Packet, vout *tappsbt.VOutput, change *tappsbt.VOutput) UnpulishedTransfer {
-
-	proof := vout.ProofSuffix
-	internalKey := vout.AnchorOutputInternalKey
-	scriptKey := vout.ScriptKey
-	merkleRoot := tappsbt.ExtractCustomField(
-		btcPacket.Outputs[vout.AnchorOutputIndex].Unknowns, tappsbt.PsbtKeyTypeOutputTaprootMerkleRoot,
-	)
-	taprootAssetRoot := tappsbt.ExtractCustomField(
-		btcPacket.Outputs[vout.AnchorOutputIndex].Unknowns, tappsbt.PsbtKeyTypeOutputAssetRoot,
-	)
-	taprootSibling, _, err := commitment.MaybeEncodeTapscriptPreimage(vout.AnchorOutputTapscriptSibling)
+func spendBoardingTransfer(assetId []byte, boardingTransfer ArkBoardingTransfer, transferAddress *address.Tap, server *TapClient) ChainTransfer {
+	addresses := []*address.Tap{transferAddress}
+	// Note: This create a VPacket
+	fundedPkt, err := tappsbt.FromAddresses(addresses, TRANSFER_OUTPUT_INDEX)
 	if err != nil {
-		log.Fatalf("cannot encode tapscript preimage %v", err)
+		log.Fatalf("cannot generate packet from address %v", err)
 	}
 
-	finalTx, err := psbt.Extract(btcPacket)
-	if err != nil {
-		log.Fatalf("cannot extract final transaction %v", err)
-	}
-	txhash := vout.ProofSuffix.AnchorTx.TxHash()
+	// Note: This add input details
+	createAndSetInput(fundedPkt, TRANSFER_INPUT_INDEX, boardingTransfer.previousOutput, assetId)
 
-	outpoint := wire.NewOutPoint(&txhash, vout.AnchorOutputIndex)
+	// Note: This add output details
+	tapsend.PrepareOutputAssets(context.TODO(), fundedPkt)
 
-	anchorValue := btcPacket.UnsignedTx.TxOut[vout.AnchorOutputIndex].Value
+	CreateAndInsertAssetWitness(boardingTransfer.arkTransferDetails, fundedPkt, boardingTransfer.user, server)
 
-	return UnpulishedTransfer{finalTx, outpoint, proof, change.ProofSuffix, merkleRoot, taprootSibling, internalKey, scriptKey, anchorValue, taprootAssetRoot}
-
-}
-
-func CreateAndSignOffchainIntermediateRoundTransfer(amnt uint64, assetId []byte, userTapClient, serverTapClient *TapClient, lockHeight uint32, ato ArkTransferOutputDetails, unpublishedTransfer *UnpulishedTransfer) (ArkTransferOutputDetails, UnpulishedTransfer) {
-	userScriptKey, userInternalKey := userTapClient.GetNextKeys()
-	serverScriptKey, serverInternalKey := serverTapClient.GetNextKeys()
-
-	// 1. Create Both Bording Ark Script and Boarding Ark Asset Script
-	arkScript, err := CreateRoundArkScript(userInternalKey.PubKey, serverInternalKey.PubKey, lockHeight)
-	if err != nil {
-		log.Fatal(err)
-	}
-	arkAssetScript := CreateRoundArkAssetScript(userScriptKey.RawKey.PubKey, serverScriptKey.RawKey.PubKey, lockHeight)
+	vPackets := []*tappsbt.VPacket{fundedPkt}
+	transferBtcPkt, err := tapsend.PrepareAnchoringTemplate(vPackets)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	addr_resp, err := serverTapClient.GetBoardingAddress(arkScript.Branch, arkAssetScript.tapScriptKey, assetId, amnt)
+	btcTransferPkt, finalizedTransferPackets, _, _ := server.CommitVirtualPsbts(
+		transferBtcPkt, vPackets, nil, -1,
+	)
+
+	btcTxWitness := CreateBtcWitness(boardingTransfer.arkTransferDetails, btcTransferPkt, boardingTransfer.user, server)
+	var buf bytes.Buffer
+	err = psbt.WriteTxWitness(&buf, btcTxWitness)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	btcTransferPkt.Inputs[TRANSFER_INPUT_INDEX].FinalScriptWitness = buf.Bytes()
+	signedPkt := server.FinalizePacket(btcTransferPkt)
+
+	unpublishedTransfer := DeriveUnpublishedChainTransfer(signedPkt, finalizedTransferPackets[0])
+	return unpublishedTransfer
+}
+
+func CreateRoundTransfer(boardingTransfer ArkBoardingTransfer, assetId []byte, user, server *TapClient, level uint64) ([]*proof.Proof, *proof.File) {
+	unpublisedProofList := make([]*proof.Proof, level)
+
+	userScriptKey, userInternalKey := user.GetNextKeys()
+	serverScriptKey, serverInternalKey := server.GetNextKeys()
+
+	arkScript, err := CreateRoundArkScript(userInternalKey.PubKey, serverInternalKey.PubKey)
+	if err != nil {
+		log.Fatal(err)
+	}
+	arkAssetScript := CreateRoundArkAssetScript(userScriptKey.RawKey.PubKey, serverScriptKey.RawKey.PubKey)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	addr_resp, err := server.GetBoardingAddress(arkScript.Branch, arkAssetScript.tapScriptKey, assetId, boardingTransfer.boardingAmount)
 	if err != nil {
 		log.Fatalf("cannot get address %v", err)
 	}
@@ -85,216 +77,27 @@ func CreateAndSignOffchainIntermediateRoundTransfer(amnt uint64, assetId []byte,
 	if err != nil {
 		log.Fatalf("cannot decode address %v", err)
 	}
-	addresses := make([]*address.Tap, 1)
-	addresses[0] = addr
 
-	// Note: This create a VPacket
-	fundedPkt, err := tappsbt.FromAddresses(addresses, 1)
+	unpublishedRootTransfer := spendBoardingTransfer(assetId, boardingTransfer, addr, server)
+	btcControlBlock := extractControlBlock(arkScript, unpublishedRootTransfer.taprootAssetRoot)
+	rootTransferDetails := ArkTransfer{btcControlBlock, userScriptKey, userInternalKey, serverScriptKey, serverInternalKey, arkScript, arkAssetScript}
 
-	if err != nil {
-		log.Fatalf("cannot generate packet from address %v", err)
-	}
+	rootChainTransfer := ArkRoundChainTransfer{arkTransferDetails: rootTransferDetails, unpublishedTransfer: unpublishedRootTransfer}
 
-	// Note: This add input details
-	if ato.previousOutput != nil {
-		createAndSetInput(fundedPkt, 0, ato.previousOutput, assetId)
-	} else {
-		createAndSetInputIntermediate(fundedPkt, 0, *unpublishedTransfer, assetId)
-	}
+	createIntermediateChainTransfer(assetId, boardingTransfer.boardingAmount, rootChainTransfer, level, user, server, &unpublisedProofList)
 
-	// Note: This add output details
-	tapsend.PrepareOutputAssets(context.TODO(), fundedPkt)
-
-	_, userSessionId := userTapClient.partialSignAssetTransfer(fundedPkt,
-		&ato.arkAssetScript.leaves[0], ato.userScriptKey.RawKey, ato.arkAssetScript.userNonce, ato.serverScriptKey.RawKey.PubKey, ato.arkAssetScript.serverNonce.PubNonce)
-
-	log.Println("created asset partial sig for user")
-
-	serverPartialSig, _ := serverTapClient.partialSignAssetTransfer(fundedPkt,
-		&ato.arkAssetScript.leaves[0], ato.serverScriptKey.RawKey, ato.arkAssetScript.serverNonce, ato.userScriptKey.RawKey.PubKey, ato.arkAssetScript.userNonce.PubNonce)
-
-	log.Println("created asset partial for server")
-
-	transferAssetWitness := userTapClient.combineSigs(userSessionId, serverPartialSig, ato.arkAssetScript.leaves[0], ato.arkAssetScript.tree, ato.arkAssetScript.controlBlock)
-
-	// update transferAsset Witnesss [Nothing Needs To Change]
-	for idx := range fundedPkt.Outputs {
-		asset := fundedPkt.Outputs[idx].Asset
-		firstPrevWitness := &asset.PrevWitnesses[0]
-		if asset.HasSplitCommitmentWitness() {
-			rootAsset := firstPrevWitness.SplitCommitment.RootAsset
-			firstPrevWitness = &rootAsset.PrevWitnesses[0]
-		}
-		firstPrevWitness.TxWitness = transferAssetWitness
-	}
-	// ensure the split asset root  have an anchor output
-	changeOutput := fundedPkt.Outputs[0]
-	changeOutput.AnchorOutputInternalKey = asset.NUMSPubKey
-	vPackets := []*tappsbt.VPacket{fundedPkt}
-	transferBtcPkt, err := tapsend.PrepareAnchoringTemplate(vPackets)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	btcTransferPkt, finalizedTransferPackets, _, _ := serverTapClient.CommitVirtualPsbts(
-		transferBtcPkt, vPackets, nil, -1,
-	)
-
-	// sign Btc Transaction
-	btcControlBlockBytes, err := ato.btcControlBlock.ToBytes()
-	if err != nil {
-		log.Fatal(err)
-	}
-	assetInputIdx := uint32(0)
-	serverBtcPartialSig := serverTapClient.partialSignBtcTransfer(
-		btcTransferPkt, assetInputIdx,
-		ato.serverInternalKey, btcControlBlockBytes, ato.arkScript.Left,
-	)
-	userBtcPartialSig := userTapClient.partialSignBtcTransfer(
-		btcTransferPkt, assetInputIdx,
-		ato.userInternalKey, btcControlBlockBytes, ato.arkScript.Left,
-	)
-
-	txWitness := wire.TxWitness{
-		serverBtcPartialSig,
-		userBtcPartialSig,
-		ato.arkScript.Left.Script,
-		btcControlBlockBytes,
-	}
-	var buf bytes.Buffer
-	err = psbt.WriteTxWitness(&buf, txWitness)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	btcTransferPkt.Inputs[assetInputIdx].FinalScriptWitness = buf.Bytes()
-	signedPkt := serverTapClient.FinalizePacket(btcTransferPkt)
-
-	// spend from Boarding Address
-	btcInternalKey := asset.NUMSPubKey
-	btcControlBlock := &txscript.ControlBlock{
-		LeafVersion: txscript.BaseLeafVersion,
-		InternalKey: btcInternalKey,
-	}
-
-	// Real Transfer is always output 1
-	unpublishedTransaction := DeriveUnpublishedOutput(signedPkt, finalizedTransferPackets[0].Outputs[1], finalizedTransferPackets[0].Outputs[0])
-
-	log.Println(unpublishedTransaction.taprootAssetRoot)
-	rightNodeHash := arkScript.Right.TapHash()
-	inclusionproof := append(rightNodeHash[:], unpublishedTransaction.taprootAssetRoot[:]...)
-	btcControlBlock.InclusionProof = inclusionproof
-	rootHash := btcControlBlock.RootHash(arkScript.Left.Script)
-	tapKey := txscript.ComputeTaprootOutputKey(btcInternalKey, rootHash)
-	if tapKey.SerializeCompressed()[0] ==
-		secp256k1.PubKeyFormatCompressedOdd {
-
-		btcControlBlock.OutputKeyYIsOdd = true
-	}
-
-	return ArkTransferOutputDetails{btcControlBlock, userScriptKey, userInternalKey, serverScriptKey, serverInternalKey, arkScript, arkAssetScript, nil, ato.addr}, unpublishedTransaction
-
-}
-
-func CreateAndSignOffchainFinalRoundTransfer(amnt uint64, assetId []byte, userTapClient, serverTapClient *TapClient, lockHeight uint32, ato ArkTransferOutputDetails, inte UnpulishedTransfer) {
-
-	addr_resp, err := userTapClient.client.NewAddr(context.TODO(), &taprpc.NewAddrRequest{
-		AssetId: assetId,
-		Amt:     amnt,
-	})
-	if err != nil {
-		log.Fatalf("cannot get address %v", err)
-	}
-	addr, err := address.DecodeAddress(addr_resp.Encoded, &address.RegressionNetTap)
-	if err != nil {
-		log.Fatalf("cannot decode address %v", err)
-	}
-	addresses := make([]*address.Tap, 1)
-	addresses[0] = addr
-
-	// Note: This create a VPacket
-	fundedPkt, err := tappsbt.FromAddresses(addresses, 1)
-
-	if err != nil {
-		log.Fatalf("cannot generate packet from address %v", err)
-	}
-
-	// Note: This add input details
-	createAndSetInputIntermediate(fundedPkt, 0, inte, assetId)
-
-	// Note: This add output details
-	tapsend.PrepareOutputAssets(context.TODO(), fundedPkt)
-
-	_, userSessionId := userTapClient.partialSignAssetTransfer(fundedPkt,
-		&ato.arkAssetScript.leaves[0], ato.userScriptKey.RawKey, ato.arkAssetScript.userNonce, ato.serverScriptKey.RawKey.PubKey, ato.arkAssetScript.serverNonce.PubNonce)
-
-	log.Println("created asset partial sig for user")
-
-	serverPartialSig, _ := serverTapClient.partialSignAssetTransfer(fundedPkt,
-		&ato.arkAssetScript.leaves[0], ato.serverScriptKey.RawKey, ato.arkAssetScript.serverNonce, ato.userScriptKey.RawKey.PubKey, ato.arkAssetScript.userNonce.PubNonce)
-
-	log.Println("created asset partial for server")
-
-	transferAssetWitness := userTapClient.combineSigs(userSessionId, serverPartialSig, ato.arkAssetScript.leaves[0], ato.arkAssetScript.tree, ato.arkAssetScript.controlBlock)
-
-	// update transferAsset Witnesss [Nothing Needs To Change]
-	for idx := range fundedPkt.Outputs {
-		asset := fundedPkt.Outputs[idx].Asset
-		firstPrevWitness := &asset.PrevWitnesses[0]
-		if asset.HasSplitCommitmentWitness() {
-			rootAsset := firstPrevWitness.SplitCommitment.RootAsset
-			firstPrevWitness = &rootAsset.PrevWitnesses[0]
-		}
-		firstPrevWitness.TxWitness = transferAssetWitness
-	}
-	// ensure the split asset root  have an anchor output
-	changeOutput := fundedPkt.Outputs[0]
-	changeOutput.AnchorOutputInternalKey = asset.NUMSPubKey
-	vPackets := []*tappsbt.VPacket{fundedPkt}
-	transferBtcPkt, err := tapsend.PrepareAnchoringTemplate(vPackets)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	btcTransferPkt, finalizedTransferPackets, _, _ := serverTapClient.CommitVirtualPsbts(
-		transferBtcPkt, vPackets, nil, -1,
-	)
-
-	// sign Btc Transaction
-	btcControlBlockBytes, err := ato.btcControlBlock.ToBytes()
-	if err != nil {
-		log.Fatal(err)
-	}
-	assetInputIdx := uint32(0)
-	serverBtcPartialSig := serverTapClient.partialSignBtcTransfer(
-		btcTransferPkt, assetInputIdx,
-		ato.serverInternalKey, btcControlBlockBytes, ato.arkScript.Left,
-	)
-	userBtcPartialSig := userTapClient.partialSignBtcTransfer(
-		btcTransferPkt, assetInputIdx,
-		ato.userInternalKey, btcControlBlockBytes, ato.arkScript.Left,
-	)
-
-	txWitness := wire.TxWitness{
-		serverBtcPartialSig,
-		userBtcPartialSig,
-		ato.arkScript.Left.Script,
-		btcControlBlockBytes,
-	}
-	var buf bytes.Buffer
-	err = psbt.WriteTxWitness(&buf, txWitness)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	btcTransferPkt.Inputs[assetInputIdx].FinalScriptWitness = buf.Bytes()
-	signedPkt := serverTapClient.FinalizePacket(btcTransferPkt)
-
-	// Publish Intermediate Transaction and Mine
-	log.Println("Intermediate Asset Transfered Please Submit and Mine")
-
+	// Broadcast the round Transfer
 	bcoinClient := GetBitcoinClient()
-	_, err = bcoinClient.SendRawTransaction(inte.finalTx, true)
+	fullproof, err := server.client.ExportProof(context.TODO(), &taprpc.ExportProofRequest{
+		AssetId:   assetId,
+		ScriptKey: boardingTransfer.previousOutput.ScriptKey,
+	})
+	decodedFullProofFile, err := proof.DecodeFile(fullproof.RawProofFile)
+	if err != nil {
+		log.Fatalf("cannot fully decode proof file %v", err)
+	}
+
+	_, err = bcoinClient.SendRawTransaction(unpublishedRootTransfer.finalTx, true)
 	if err != nil {
 		log.Fatalf("cannot send raw transaction %v", err)
 	}
@@ -319,95 +122,207 @@ func CreateAndSignOffchainFinalRoundTransfer(amnt uint64, assetId []byte, userTa
 		log.Fatalf("cannot get block height %v", err)
 	}
 
-	// Update Intermediate Transfer Proofs
-	intermediateTransferProof := inte.transferProof
-	intermediateChangeProof := inte.changeProof
-	intermediateAnchorTx := intermediateTransferProof.AnchorTx
-
 	proofParams := proof.BaseProofParams{
 		Block:       block,
-		Tx:          &intermediateAnchorTx,
+		Tx:          unpublishedRootTransfer.finalTx,
 		BlockHeight: uint32(blockheight),
 		TxIndex:     int(1),
 	}
 
-	err = intermediateTransferProof.UpdateTransitionProof(&proofParams)
+	transferProof := unpublishedRootTransfer.transferProof
+	err = transferProof.UpdateTransitionProof(&proofParams)
 	if err != nil {
 		log.Fatalf("cannot update transfer proof %v", err)
 	}
 
-	err = intermediateChangeProof.UpdateTransitionProof(&proofParams)
+	err = decodedFullProofFile.AppendProof(*transferProof)
 	if err != nil {
-		log.Fatalf("cannot update change proof %v", err)
+		log.Fatalf("cannot fully append proof file %v", err)
 	}
 
-	fullproof, err := serverTapClient.client.ExportProof(context.TODO(), &taprpc.ExportProofRequest{
-		AssetId:   assetId,
-		ScriptKey: ato.addr.ScriptKey,
+}
+
+func createIntermediateChainTransfer(assetId []byte, amount uint64, arkChainTransfer ArkRoundChainTransfer, level uint64, user, server *TapClient, unpublishedProofList *[]*proof.Proof) {
+	if level == 0 {
+		createFinalChainTransfer(assetId, amount, arkChainTransfer, level, user, server, unpublishedProofList)
+		return
+	}
+
+	userScriptKey, userInternalKey := user.GetNextKeys()
+	serverScriptKey, serverInternalKey := server.GetNextKeys()
+
+	arkScript, err := CreateRoundArkScript(userInternalKey.PubKey, serverInternalKey.PubKey)
+	if err != nil {
+		log.Fatal(err)
+	}
+	arkAssetScript := CreateRoundArkAssetScript(userScriptKey.RawKey.PubKey, serverScriptKey.RawKey.PubKey)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	addr_resp, err := server.GetBoardingAddress(arkScript.Branch, arkAssetScript.tapScriptKey, assetId, amount)
+	if err != nil {
+		log.Fatalf("cannot get address %v", err)
+	}
+	transferAddress, err := address.DecodeAddress(addr_resp.Encoded, &address.RegressionNetTap)
+	if err != nil {
+		log.Fatalf("cannot decode address %v", err)
+	}
+
+	addresses := []*address.Tap{transferAddress}
+	// Note: This create a VPacket
+	fundedPkt, err := tappsbt.FromAddresses(addresses, TRANSFER_OUTPUT_INDEX)
+	if err != nil {
+		log.Fatalf("cannot generate packet from address %v", err)
+	}
+
+	// Note: This add input details
+	createAndSetInputIntermediate(fundedPkt, TRANSFER_INPUT_INDEX, arkChainTransfer.unpublishedTransfer, assetId)
+
+	// Note: This add output details
+	tapsend.PrepareOutputAssets(context.TODO(), fundedPkt)
+
+	CreateAndInsertAssetWitness(arkChainTransfer.arkTransferDetails, fundedPkt, user, server)
+
+	vPackets := []*tappsbt.VPacket{fundedPkt}
+	transferBtcPkt, err := tapsend.PrepareAnchoringTemplate(vPackets)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	btcTransferPkt, finalizedTransferPackets, _, _ := server.CommitVirtualPsbts(
+		transferBtcPkt, vPackets, nil, -1,
+	)
+
+	btcTxWitness := CreateBtcWitness(arkChainTransfer.arkTransferDetails, btcTransferPkt, user, server)
+	var buf bytes.Buffer
+	err = psbt.WriteTxWitness(&buf, btcTxWitness)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	btcTransferPkt.Inputs[TRANSFER_INPUT_INDEX].FinalScriptWitness = buf.Bytes()
+	signedPkt := server.FinalizePacket(btcTransferPkt)
+
+	unpublishedTransfer := DeriveUnpublishedChainTransfer(signedPkt, finalizedTransferPackets[0])
+	btcControlBlock := extractControlBlock(arkScript, unpublishedTransfer.taprootAssetRoot)
+
+	*unpublishedProofList = append(*unpublishedProofList, unpublishedTransfer.transferProof)
+
+	transferDetails := ArkTransfer{btcControlBlock, userScriptKey, userInternalKey, serverScriptKey, serverInternalKey, arkScript, arkAssetScript}
+	interChainTransfer := ArkRoundChainTransfer{arkTransferDetails: transferDetails, unpublishedTransfer: unpublishedTransfer}
+
+	createIntermediateChainTransfer(assetId, amount, interChainTransfer, level-1, user, server, unpublishedProofList)
+}
+
+func createFinalChainTransfer(assetId []byte, amount uint64, arkChainTransfer ArkRoundChainTransfer, level uint64, user, server *TapClient, unpublishedProofList *[]*proof.Proof) {
+	addr_resp, err := user.client.NewAddr(context.TODO(), &taprpc.NewAddrRequest{
+		AssetId: assetId,
+		Amt:     amount,
 	})
-
 	if err != nil {
-		log.Fatalf("cannot get full proof %v", err)
+		log.Fatalf("cannot get address %v", err)
+	}
+	addr, err := address.DecodeAddress(addr_resp.Encoded, &address.RegressionNetTap)
+	if err != nil {
+		log.Fatalf("cannot decode address %v", err)
+	}
+	addresses := make([]*address.Tap, 1)
+	addresses[0] = addr
+	// Note: This create a VPacket
+	fundedPkt, err := tappsbt.FromAddresses(addresses, TRANSFER_OUTPUT_INDEX)
+	if err != nil {
+		log.Fatalf("cannot generate packet from address %v", err)
 	}
 
+	// Note: This add input details
+	createAndSetInputIntermediate(fundedPkt, TRANSFER_INPUT_INDEX, arkChainTransfer.unpublishedTransfer, assetId)
+
+	// Note: This add output details
+	tapsend.PrepareOutputAssets(context.TODO(), fundedPkt)
+
+	CreateAndInsertAssetWitness(arkChainTransfer.arkTransferDetails, fundedPkt, user, server)
+
+	vPackets := []*tappsbt.VPacket{fundedPkt}
+	transferBtcPkt, err := tapsend.PrepareAnchoringTemplate(vPackets)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	btcTransferPkt, finalizedTransferPackets, _, _ := server.CommitVirtualPsbts(
+		transferBtcPkt, vPackets, nil, -1,
+	)
+
+	btcTxWitness := CreateBtcWitness(arkChainTransfer.arkTransferDetails, btcTransferPkt, user, server)
+	var buf bytes.Buffer
+	err = psbt.WriteTxWitness(&buf, btcTxWitness)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	btcTransferPkt.Inputs[TRANSFER_INPUT_INDEX].FinalScriptWitness = buf.Bytes()
+	signedPkt := server.FinalizePacket(btcTransferPkt)
+
+	unpublishedTransfer := DeriveUnpublishedChainTransfer(signedPkt, finalizedTransferPackets[0])
+	*unpublishedProofList = append(*unpublishedProofList, unpublishedTransfer.transferProof)
+
+}
+
+func publishTransfersAndSubmitProofs(assetId []byte, rootAddr *taprpc.Addr, unpublishedTransferList []*ChainTransfer, user *TapClient, server *TapClient) {
+	bcoinClient := GetBitcoinClient()
+	fullproof, err := server.client.ExportProof(context.TODO(), &taprpc.ExportProofRequest{
+		AssetId:   assetId,
+		ScriptKey: rootAddr.ScriptKey,
+	})
 	decodedFullProofFile, err := proof.DecodeFile(fullproof.RawProofFile)
 	if err != nil {
 		log.Fatalf("cannot fully decode proof file %v", err)
 	}
 
-	err = decodedFullProofFile.AppendProof(*intermediateTransferProof)
-	if err != nil {
-		log.Fatalf("cannot fully append proof file %v", err)
-	}
+	for _, unpublishedTransfer := range unpublishedTransferList {
+		_, err = bcoinClient.SendRawTransaction(unpublishedTransfer.finalTx, true)
+		if err != nil {
+			log.Fatalf("cannot send raw transaction %v", err)
+		}
 
-	// Log and Publish Final Transaction
-	log.Println("Final Asset Transfered Please Mine")
+		address1, err := bcoinClient.GetNewAddress("")
+		if err != nil {
+			log.Fatalf("cannot generate address %v", err)
+		}
+		maxretries := int64(3)
+		blockhash, err := bcoinClient.GenerateToAddress(1, address1, &maxretries)
+		if err != nil {
+			log.Fatalf("cannot generate to address %v", err)
+		}
 
-	// Real Transfer is always output 1
-	unpublishedTransaction := DeriveUnpublishedOutput(signedPkt, finalizedTransferPackets[0].Outputs[1], finalizedTransferPackets[0].Outputs[0])
+		block, err := bcoinClient.GetBlock(blockhash[0])
+		if err != nil {
+			log.Fatalf("cannot get block %v", err)
+		}
 
-	bcoinClient = GetBitcoinClient()
-	_, err = bcoinClient.SendRawTransaction(unpublishedTransaction.finalTx, true)
-	if err != nil {
-		log.Fatalf("cannot send raw transaction %v", err)
-	}
+		blockheight, err := bcoinClient.GetBlockCount()
+		if err != nil {
+			log.Fatalf("cannot get block height %v", err)
+		}
 
-	address1, err = bcoinClient.GetNewAddress("")
-	if err != nil {
-		log.Fatalf("cannot generate address %v", err)
-	}
-	maxretries = int64(3)
-	blockhash, err = bcoinClient.GenerateToAddress(1, address1, &maxretries)
-	if err != nil {
-		log.Fatalf("cannot generate to address %v", err)
-	}
+		proofParams := proof.BaseProofParams{
+			Block:       block,
+			Tx:          unpublishedTransfer.finalTx,
+			BlockHeight: uint32(blockheight),
+			TxIndex:     int(1),
+		}
 
-	block, err = bcoinClient.GetBlock(blockhash[0])
-	if err != nil {
-		log.Fatalf("cannot get block %v", err)
-	}
+		transferProof := unpublishedTransfer.transferProof
+		err = transferProof.UpdateTransitionProof(&proofParams)
+		if err != nil {
+			log.Fatalf("cannot update transfer proof %v", err)
+		}
 
-	blockheight, err = bcoinClient.GetBlockCount()
-	if err != nil {
-		log.Fatalf("cannot get block height %v", err)
-	}
+		err = decodedFullProofFile.AppendProof(*transferProof)
+		if err != nil {
+			log.Fatalf("cannot fully append proof file %v", err)
+		}
 
-	//update final transfer Proofs
-	proofParams = proof.BaseProofParams{
-		Block:       block,
-		Tx:          unpublishedTransaction.finalTx,
-		BlockHeight: uint32(blockheight),
-		TxIndex:     int(1),
-	}
-
-	err = unpublishedTransaction.transferProof.UpdateTransitionProof(&proofParams)
-	if err != nil {
-		log.Fatalf("cannot update transfer proof %v", err)
-	}
-
-	err = decodedFullProofFile.AppendProof(*unpublishedTransaction.transferProof)
-	if err != nil {
-		log.Fatalf("cannot fully append proof file %v", err)
 	}
 
 	encodedTransferProofFile, err := proof.EncodeFile(decodedFullProofFile)
@@ -415,7 +330,7 @@ func CreateAndSignOffchainFinalRoundTransfer(amnt uint64, assetId []byte, userTa
 		log.Fatalf("cannot encode proof File %v", err)
 	}
 
-	_, err = userTapClient.universeclient.ImportProof(context.TODO(), &tapdevrpc.ImportProofRequest{
+	_, err = user.universeclient.ImportProof(context.TODO(), &tapdevrpc.ImportProofRequest{
 		ProofFile:    encodedTransferProofFile,
 		GenesisPoint: fullproof.GenesisPoint,
 	})
@@ -423,5 +338,4 @@ func CreateAndSignOffchainFinalRoundTransfer(amnt uint64, assetId []byte, userTa
 	if err != nil {
 		log.Fatalf("cannot import proof %v", err)
 	}
-
 }
