@@ -19,6 +19,11 @@ import (
 	"github.com/lightningnetwork/lnd/keychain"
 )
 
+type ProofTxMsg struct {
+	Proof *proof.Proof
+	TxMsg *wire.MsgTx
+}
+
 const LOCK_BLOCK_HEIGHT = 4320
 
 type ArkScript struct {
@@ -71,10 +76,6 @@ type ArkBoardingTransfer struct {
 type ArkRoundChainTransfer struct {
 	arkTransferDetails  ArkTransfer
 	unpublishedTransfer ChainTransfer
-}
-
-type ArkRoundTransfer struct {
-	unpublishedTransaction []ChainTransfer
 }
 
 func CreateBoardingArkScript(user, server *btcec.PublicKey) (ArkScript, error) {
@@ -140,6 +141,10 @@ func CreateBoardingArkAssetScript(
 		AddOp(txscript.OP_CHECKSIG).
 		Script()
 
+	if err != nil {
+		log.Fatalf("Cannot create Musig Tapscript %v", err)
+	}
+
 	leaves[0] = txscript.TapLeaf{
 		LeafVersion: txscript.BaseLeafVersion,
 		Script:      muSigTapscript,
@@ -151,6 +156,10 @@ func CreateBoardingArkAssetScript(
 		AddData(schnorr.SerializePubKey(user)).
 		AddOp(txscript.OP_CHECKSIG).
 		Script()
+
+	if err != nil {
+		log.Fatalf("Cannot create Unilateral Exit Script %v", err)
+	}
 
 	leaves[1] = txscript.TapLeaf{
 		LeafVersion: txscript.BaseLeafVersion,
@@ -250,6 +259,10 @@ func CreateRoundArkAssetScript(
 		AddOp(txscript.OP_CHECKSIG).
 		Script()
 
+	if err != nil {
+		log.Fatalf("Cannot create Musig Tapscript %v", err)
+	}
+
 	leaves[0] = txscript.TapLeaf{
 		LeafVersion: txscript.BaseLeafVersion,
 		Script:      muSigTapscript,
@@ -261,6 +274,10 @@ func CreateRoundArkAssetScript(
 		AddData(schnorr.SerializePubKey(server)).
 		AddOp(txscript.OP_CHECKSIG).
 		Script()
+
+	if err != nil {
+		log.Fatalf("Cannot create sweep Tapscript %v", err)
+	}
 
 	leaves[1] = txscript.TapLeaf{
 		LeafVersion: txscript.BaseLeafVersion,

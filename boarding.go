@@ -10,16 +10,16 @@ import (
 
 // user tap client
 
-func SpendToBoardingTransaction(assetId []byte, amnt uint64, lockHeight uint32, userTapClient, serverTapClient *TapClient) ArkTransferOutputDetails {
+func SpendToBoardingTransaction(assetId []byte, amnt uint64, lockHeight uint32, userTapClient, serverTapClient *TapClient) ArkBoardingTransfer {
 	userScriptKey, userInternalKey := userTapClient.GetNextKeys()
 	serverScriptKey, serverInternalKey := serverTapClient.GetNextKeys()
 
 	// 1. Create Both Bording Ark Script and Boarding Ark Asset Script
-	arkScript, err := CreateBoardingArkScript(userInternalKey.PubKey, serverInternalKey.PubKey, lockHeight)
+	arkScript, err := CreateBoardingArkScript(userInternalKey.PubKey, serverInternalKey.PubKey)
 	if err != nil {
 		log.Fatal(err)
 	}
-	arkAssetScript := CreateBoardingArkAssetScript(userScriptKey.RawKey.PubKey, serverScriptKey.RawKey.PubKey, lockHeight)
+	arkAssetScript := CreateBoardingArkAssetScript(userScriptKey.RawKey.PubKey, serverScriptKey.RawKey.PubKey)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -57,7 +57,7 @@ func SpendToBoardingTransaction(assetId []byte, amnt uint64, lockHeight uint32, 
 	}
 
 	//TODO (Joshua) Ensure To Improve
-	log.Println("Asset Transfered Please Mine")
+	log.Println("Asset Transfered")
 	bcoinClient := GetBitcoinClient()
 	address1, err := bcoinClient.GetNewAddress("")
 	if err != nil {
@@ -70,5 +70,8 @@ func SpendToBoardingTransaction(assetId []byte, amnt uint64, lockHeight uint32, 
 	}
 	serverTapClient.IncomingTransferEvent(addr)
 
-	return ArkTransferOutputDetails{btcControlBlock, userScriptKey, userInternalKey, serverScriptKey, serverInternalKey, arkScript, arkAssetScript, transferOutput, addr}
+	arkTransfer := ArkTransfer{btcControlBlock, userScriptKey, userInternalKey, serverScriptKey, serverInternalKey, arkScript, arkAssetScript}
+
+	log.Println("Boarding Transaction Published Onchain")
+	return ArkBoardingTransfer{arkTransfer, transferOutput, amnt, userTapClient}
 }

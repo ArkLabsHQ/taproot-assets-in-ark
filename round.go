@@ -54,8 +54,8 @@ func spendBoardingTransfer(assetId []byte, boardingTransfer ArkBoardingTransfer,
 	return unpublishedTransfer
 }
 
-func CreateRoundTransfer(boardingTransfer ArkBoardingTransfer, assetId []byte, user, server *TapClient, level uint64) ([]*proof.Proof, *proof.File) {
-	unpublisedProofList := make([]*proof.Proof, level)
+func CreateRoundTransfer(boardingTransfer ArkBoardingTransfer, assetId []byte, user, server *TapClient, level uint64) ([]ProofTxMsg, *proof.File, string) {
+	unpublisedProofList := make([]ProofTxMsg, 0)
 
 	userScriptKey, userInternalKey := user.GetNextKeys()
 	serverScriptKey, serverInternalKey := server.GetNextKeys()
@@ -84,7 +84,7 @@ func CreateRoundTransfer(boardingTransfer ArkBoardingTransfer, assetId []byte, u
 
 	rootChainTransfer := ArkRoundChainTransfer{arkTransferDetails: rootTransferDetails, unpublishedTransfer: unpublishedRootTransfer}
 
-	createIntermediateChainTransfer(assetId, boardingTransfer.boardingAmount, rootChainTransfer, level, user, server, &unpublisedProofList)
+	createIntermediateChainTransfer(assetId, boardingTransfer.boardingAmount, rootChainTransfer, level-1, user, server, &unpublisedProofList)
 
 	// Broadcast the round Transfer
 	bcoinClient := GetBitcoinClient()
@@ -92,6 +92,10 @@ func CreateRoundTransfer(boardingTransfer ArkBoardingTransfer, assetId []byte, u
 		AssetId:   assetId,
 		ScriptKey: boardingTransfer.previousOutput.ScriptKey,
 	})
+	if err != nil {
+		log.Fatalf("cannot export proof %v", err)
+	}
+
 	decodedFullProofFile, err := proof.DecodeFile(fullproof.RawProofFile)
 	if err != nil {
 		log.Fatalf("cannot fully decode proof file %v", err)
@@ -101,6 +105,8 @@ func CreateRoundTransfer(boardingTransfer ArkBoardingTransfer, assetId []byte, u
 	if err != nil {
 		log.Fatalf("cannot send raw transaction %v", err)
 	}
+
+	log.Println("Boarding Transaction Spent")
 
 	address1, err := bcoinClient.GetNewAddress("")
 	if err != nil {
@@ -140,11 +146,15 @@ func CreateRoundTransfer(boardingTransfer ArkBoardingTransfer, assetId []byte, u
 		log.Fatalf("cannot fully append proof file %v", err)
 	}
 
+	log.Println("Round Proof Fetched and Updated")
+
+	return unpublisedProofList, decodedFullProofFile, fullproof.GenesisPoint
+
 }
 
-func createIntermediateChainTransfer(assetId []byte, amount uint64, arkChainTransfer ArkRoundChainTransfer, level uint64, user, server *TapClient, unpublishedProofList *[]*proof.Proof) {
+func createIntermediateChainTransfer(assetId []byte, amount uint64, arkChainTransfer ArkRoundChainTransfer, level uint64, user, server *TapClient, unpublishedProofList *[]ProofTxMsg) {
 	if level == 0 {
-		createFinalChainTransfer(assetId, amount, arkChainTransfer, level, user, server, unpublishedProofList)
+		createFinalChainTransfer(assetId, amount, arkChainTransfer, user, server, unpublishedProofList)
 		return
 	}
 
@@ -206,16 +216,18 @@ func createIntermediateChainTransfer(assetId []byte, amount uint64, arkChainTran
 
 	unpublishedTransfer := DeriveUnpublishedChainTransfer(signedPkt, finalizedTransferPackets[0])
 	btcControlBlock := extractControlBlock(arkScript, unpublishedTransfer.taprootAssetRoot)
-
-	*unpublishedProofList = append(*unpublishedProofList, unpublishedTransfer.transferProof)
+	newproofTxMsg := ProofTxMsg{TxMsg: unpublishedTransfer.finalTx, Proof: unpublishedTransfer.transferProof}
+	*unpublishedProofList = append(*unpublishedProofList, newproofTxMsg)
 
 	transferDetails := ArkTransfer{btcControlBlock, userScriptKey, userInternalKey, serverScriptKey, serverInternalKey, arkScript, arkAssetScript}
 	interChainTransfer := ArkRoundChainTransfer{arkTransferDetails: transferDetails, unpublishedTransfer: unpublishedTransfer}
 
+	log.Println("Intermediate Asset Transferred")
+
 	createIntermediateChainTransfer(assetId, amount, interChainTransfer, level-1, user, server, unpublishedProofList)
 }
 
-func createFinalChainTransfer(assetId []byte, amount uint64, arkChainTransfer ArkRoundChainTransfer, level uint64, user, server *TapClient, unpublishedProofList *[]*proof.Proof) {
+func createFinalChainTransfer(assetId []byte, amount uint64, arkChainTransfer ArkRoundChainTransfer, user, server *TapClient, unpublishedProofList *[]ProofTxMsg) {
 	addr_resp, err := user.client.NewAddr(context.TODO(), &taprpc.NewAddrRequest{
 		AssetId: assetId,
 		Amt:     amount,
@@ -264,23 +276,18 @@ func createFinalChainTransfer(assetId []byte, amount uint64, arkChainTransfer Ar
 	signedPkt := server.FinalizePacket(btcTransferPkt)
 
 	unpublishedTransfer := DeriveUnpublishedChainTransfer(signedPkt, finalizedTransferPackets[0])
-	*unpublishedProofList = append(*unpublishedProofList, unpublishedTransfer.transferProof)
+	newproofTxMsg := ProofTxMsg{TxMsg: unpublishedTransfer.finalTx, Proof: unpublishedTransfer.transferProof}
+	*unpublishedProofList = append(*unpublishedProofList, newproofTxMsg)
+
+	log.Println("Final Asset Transferred")
 
 }
 
-func publishTransfersAndSubmitProofs(assetId []byte, rootAddr *taprpc.Addr, unpublishedTransferList []*ChainTransfer, user *TapClient, server *TapClient) {
+func PublishTransfersAndSubmitProofs(assetId []byte, proofList []ProofTxMsg, genesisPoint string, proofFile *proof.File, user *TapClient) {
 	bcoinClient := GetBitcoinClient()
-	fullproof, err := server.client.ExportProof(context.TODO(), &taprpc.ExportProofRequest{
-		AssetId:   assetId,
-		ScriptKey: rootAddr.ScriptKey,
-	})
-	decodedFullProofFile, err := proof.DecodeFile(fullproof.RawProofFile)
-	if err != nil {
-		log.Fatalf("cannot fully decode proof file %v", err)
-	}
 
-	for _, unpublishedTransfer := range unpublishedTransferList {
-		_, err = bcoinClient.SendRawTransaction(unpublishedTransfer.finalTx, true)
+	for _, proofAndTxMsg := range proofList {
+		_, err := bcoinClient.SendRawTransaction(proofAndTxMsg.TxMsg, true)
 		if err != nil {
 			log.Fatalf("cannot send raw transaction %v", err)
 		}
@@ -307,34 +314,37 @@ func publishTransfersAndSubmitProofs(assetId []byte, rootAddr *taprpc.Addr, unpu
 
 		proofParams := proof.BaseProofParams{
 			Block:       block,
-			Tx:          unpublishedTransfer.finalTx,
+			Tx:          proofAndTxMsg.TxMsg,
 			BlockHeight: uint32(blockheight),
 			TxIndex:     int(1),
 		}
 
-		transferProof := unpublishedTransfer.transferProof
+		transferProof := proofAndTxMsg.Proof
 		err = transferProof.UpdateTransitionProof(&proofParams)
 		if err != nil {
 			log.Fatalf("cannot update transfer proof %v", err)
 		}
 
-		err = decodedFullProofFile.AppendProof(*transferProof)
+		err = proofFile.AppendProof(*transferProof)
 		if err != nil {
 			log.Fatalf("cannot fully append proof file %v", err)
 		}
 
+		log.Println("Exit Proof appended")
+
 	}
 
-	encodedTransferProofFile, err := proof.EncodeFile(decodedFullProofFile)
+	encodedTransferProofFile, err := proof.EncodeFile(proofFile)
 	if err != nil {
 		log.Fatalf("cannot encode proof File %v", err)
 	}
 
 	_, err = user.universeclient.ImportProof(context.TODO(), &tapdevrpc.ImportProofRequest{
 		ProofFile:    encodedTransferProofFile,
-		GenesisPoint: fullproof.GenesisPoint,
+		GenesisPoint: genesisPoint,
 	})
 
+	log.Println("Exit Proof Imported")
 	if err != nil {
 		log.Fatalf("cannot import proof %v", err)
 	}
