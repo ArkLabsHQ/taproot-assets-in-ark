@@ -11,6 +11,7 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
+	"github.com/lightninglabs/taproot-assets/address"
 	"github.com/lightninglabs/taproot-assets/asset"
 	"github.com/lightninglabs/taproot-assets/proof"
 	"github.com/lightninglabs/taproot-assets/tappsbt"
@@ -43,7 +44,10 @@ type ArkAssetScript struct {
 
 type ArkTransfer struct {
 	btcControlBlock *txscript.ControlBlock
+	ArkAssetKeys    ArkAssetKeys
+}
 
+type ArkAssetKeys struct {
 	userScriptKey     asset.ScriptKey
 	userInternalKey   keychain.KeyDescriptor
 	serverScriptKey   asset.ScriptKey
@@ -51,13 +55,13 @@ type ArkTransfer struct {
 
 	arkScript      ArkScript
 	arkAssetScript ArkAssetScript
+	address        *address.Tap
 }
 
 type ChainTransfer struct {
 	finalTx          *wire.MsgTx
 	outpoint         *wire.OutPoint
 	transferProof    *proof.Proof
-	changeProof      *proof.Proof
 	merkleRoot       []byte
 	taprootSibling   []byte
 	internalKey      *btcec.PublicKey
@@ -76,6 +80,32 @@ type ArkBoardingTransfer struct {
 type ArkRoundChainTransfer struct {
 	arkTransferDetails  ArkTransfer
 	unpublishedTransfer ChainTransfer
+}
+
+func CreateAssetKeys(assetId []byte, amount uint64, user, server *TapClient) ArkAssetKeys {
+	userScriptKey, userInternalKey := user.GetNextKeys()
+	serverScriptKey, serverInternalKey := server.GetNextKeys()
+
+	arkScript, err := CreateRoundArkScript(userInternalKey.PubKey, serverInternalKey.PubKey)
+	if err != nil {
+		log.Fatal(err)
+	}
+	arkAssetScript := CreateRoundArkAssetScript(userScriptKey.RawKey.PubKey, serverScriptKey.RawKey.PubKey)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	addr_resp, err := server.GetBoardingAddress(arkScript.Branch, arkAssetScript.tapScriptKey, assetId, amount)
+	if err != nil {
+		log.Fatalf("cannot get address %v", err)
+	}
+	transferAddress, err := address.DecodeAddress(addr_resp.Encoded, &address.RegressionNetTap)
+	if err != nil {
+		log.Fatalf("cannot decode address %v", err)
+	}
+
+	return ArkAssetKeys{userScriptKey, userInternalKey, serverScriptKey, serverInternalKey, arkScript, arkAssetScript, transferAddress}
+
 }
 
 func CreateBoardingArkScript(user, server *btcec.PublicKey) (ArkScript, error) {

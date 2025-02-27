@@ -12,13 +12,12 @@ import (
 	"github.com/lightninglabs/taproot-assets/tappsbt"
 )
 
-const CHANGE_OUTPUT_INDEX = 0
+const BOARDING_TRANSFER_OUTPUT_INDEX = 1
 const TRANSFER_INPUT_INDEX = 0
-const TRANSFER_OUTPUT_INDEX = 1
+const LEFT_TRANSFER_OUTPUT_INDEX = 1
+const RIGHT_TRANSFER_OUTPUT_INDEX = 2
 
-func DeriveUnpublishedChainTransfer(btcPacket *psbt.Packet, transferPacket *tappsbt.VPacket) ChainTransfer {
-	transferOutput := transferPacket.Outputs[TRANSFER_OUTPUT_INDEX]
-	changeOutput := transferPacket.Outputs[CHANGE_OUTPUT_INDEX]
+func DeriveUnpublishedChainTransfer(btcPacket *psbt.Packet, transferOutput *tappsbt.VOutput) ChainTransfer {
 	internalKey := transferOutput.AnchorOutputInternalKey
 	scriptKey := transferOutput.ScriptKey
 	merkleRoot := tappsbt.ExtractCustomField(
@@ -42,7 +41,7 @@ func DeriveUnpublishedChainTransfer(btcPacket *psbt.Packet, transferPacket *tapp
 
 	anchorValue := btcPacket.UnsignedTx.TxOut[transferOutput.AnchorOutputIndex].Value
 
-	return ChainTransfer{finalTx, outpoint, transferOutput.ProofSuffix, changeOutput.ProofSuffix, merkleRoot, taprootSibling, internalKey, scriptKey, anchorValue, taprootAssetRoot}
+	return ChainTransfer{finalTx, outpoint, transferOutput.ProofSuffix, merkleRoot, taprootSibling, internalKey, scriptKey, anchorValue, taprootAssetRoot}
 
 }
 
