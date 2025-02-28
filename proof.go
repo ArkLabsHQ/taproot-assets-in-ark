@@ -42,9 +42,10 @@ func PublishTransfersAndSubmitProofs(assetId []byte, proofList []ProofTxMsg, gen
 	bcoinClient := GetBitcoinClient()
 	updatedProofList := make([][]byte, 0)
 
-	processParentAndChild := func(parent, leftchild, rightchild ProofTxMsg, proofFile []byte) {
-		sentParentMessage := bcoinClient.SendTransaction(parent.TxMsg)
-		updatedProof := UpdateAndAppendProof(proofFile, parent.TxMsg, parent.Proof, sentParentMessage)
+	rootSentMessage := bcoinClient.SendTransaction(proofList[0].TxMsg)
+
+	processParentAndChild := func(parentSentMessage BitcoinSendTxResult, parent, leftchild, rightchild ProofTxMsg, proofFile []byte) {
+		updatedProof := UpdateAndAppendProof(proofFile, parent.TxMsg, parent.Proof, parentSentMessage)
 
 		sentLeftMessage := bcoinClient.SendTransaction(leftchild.TxMsg)
 		updatedLeftProof := UpdateAndAppendProof(updatedProof, leftchild.TxMsg, leftchild.Proof, sentLeftMessage)
@@ -53,8 +54,8 @@ func PublishTransfersAndSubmitProofs(assetId []byte, proofList []ProofTxMsg, gen
 		updatedProofList = append(updatedProofList, updatedLeftProof, updatedRightProof)
 	}
 
-	processParentAndChild(proofList[0], proofList[2], proofList[3], proofFile)
-	processParentAndChild(proofList[1], proofList[4], proofList[5], proofFile)
+	processParentAndChild(rootSentMessage, proofList[0], proofList[2], proofList[3], proofFile)
+	processParentAndChild(rootSentMessage, proofList[1], proofList[4], proofList[5], proofFile)
 
 	log.Println("Exit Proof appended")
 

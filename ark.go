@@ -82,7 +82,7 @@ type ArkRoundChainTransfer struct {
 	unpublishedTransfer ChainTransfer
 }
 
-func CreateAssetKeys(assetId []byte, amount uint64, user, server *TapClient) ArkAssetKeys {
+func CreateAssetKeys(assetId []byte, amount uint64, user, server *TapClient) (*taprpc.Addr, ArkAssetKeys) {
 	userScriptKey, userInternalKey := user.GetNextKeys()
 	serverScriptKey, serverInternalKey := server.GetNextKeys()
 
@@ -104,7 +104,7 @@ func CreateAssetKeys(assetId []byte, amount uint64, user, server *TapClient) Ark
 		log.Fatalf("cannot decode address %v", err)
 	}
 
-	return ArkAssetKeys{userScriptKey, userInternalKey, serverScriptKey, serverInternalKey, arkScript, arkAssetScript, transferAddress}
+	return addr_resp, ArkAssetKeys{userScriptKey, userInternalKey, serverScriptKey, serverInternalKey, arkScript, arkAssetScript, transferAddress}
 
 }
 
@@ -346,16 +346,16 @@ func CreateRoundArkAssetScript(
 
 func CreateAndInsertAssetWitness(arkTransferDetails ArkTransfer, fundedPkt *tappsbt.VPacket, user, server *TapClient) {
 	_, serverSessionId := server.partialSignAssetTransfer(fundedPkt,
-		&arkTransferDetails.arkAssetScript.leaves[0], arkTransferDetails.serverScriptKey.RawKey, arkTransferDetails.arkAssetScript.serverNonce, arkTransferDetails.userScriptKey.RawKey.PubKey, arkTransferDetails.arkAssetScript.userNonce.PubNonce)
+		&arkTransferDetails.ArkAssetKeys.arkAssetScript.leaves[0], arkTransferDetails.ArkAssetKeys.serverScriptKey.RawKey, arkTransferDetails.ArkAssetKeys.arkAssetScript.serverNonce, arkTransferDetails.ArkAssetKeys.userScriptKey.RawKey.PubKey, arkTransferDetails.ArkAssetKeys.arkAssetScript.userNonce.PubNonce)
 
 	userPartialSig, _ := user.partialSignAssetTransfer(fundedPkt,
-		&arkTransferDetails.arkAssetScript.leaves[0], arkTransferDetails.userScriptKey.RawKey, arkTransferDetails.arkAssetScript.userNonce, arkTransferDetails.serverScriptKey.RawKey.PubKey, arkTransferDetails.arkAssetScript.serverNonce.PubNonce)
+		&arkTransferDetails.ArkAssetKeys.arkAssetScript.leaves[0], arkTransferDetails.ArkAssetKeys.userScriptKey.RawKey, arkTransferDetails.ArkAssetKeys.arkAssetScript.userNonce, arkTransferDetails.ArkAssetKeys.serverScriptKey.RawKey.PubKey, arkTransferDetails.ArkAssetKeys.arkAssetScript.serverNonce.PubNonce)
 
 	log.Println("created asset partial sig for user")
 
 	log.Println("created asset partial for server")
 
-	transferAssetWitness := server.combineSigs(serverSessionId, userPartialSig, arkTransferDetails.arkAssetScript.leaves[0], arkTransferDetails.arkAssetScript.tree, arkTransferDetails.arkAssetScript.controlBlock)
+	transferAssetWitness := server.combineSigs(serverSessionId, userPartialSig, arkTransferDetails.ArkAssetKeys.arkAssetScript.leaves[0], arkTransferDetails.ArkAssetKeys.arkAssetScript.tree, arkTransferDetails.ArkAssetKeys.arkAssetScript.controlBlock)
 
 	// update transferAsset Witnesss [Nothing Needs To Change]
 	for idx := range fundedPkt.Outputs {
@@ -380,17 +380,17 @@ func CreateBtcWitness(arkTransferDetails ArkTransfer, btcPacket *psbt.Packet, us
 	assetInputIdx := uint32(TRANSFER_INPUT_INDEX)
 	serverBtcPartialSig := server.partialSignBtcTransfer(
 		btcPacket, assetInputIdx,
-		arkTransferDetails.serverInternalKey, btcControlBlockBytes, arkTransferDetails.arkScript.cooperativeSpend,
+		arkTransferDetails.ArkAssetKeys.serverInternalKey, btcControlBlockBytes, arkTransferDetails.ArkAssetKeys.arkScript.cooperativeSpend,
 	)
 	userBtcPartialSig := user.partialSignBtcTransfer(
 		btcPacket, assetInputIdx,
-		arkTransferDetails.userInternalKey, btcControlBlockBytes, arkTransferDetails.arkScript.cooperativeSpend,
+		arkTransferDetails.ArkAssetKeys.userInternalKey, btcControlBlockBytes, arkTransferDetails.ArkAssetKeys.arkScript.cooperativeSpend,
 	)
 
 	txWitness := wire.TxWitness{
 		serverBtcPartialSig,
 		userBtcPartialSig,
-		arkTransferDetails.arkScript.cooperativeSpend.Script,
+		arkTransferDetails.ArkAssetKeys.arkScript.cooperativeSpend.Script,
 		btcControlBlockBytes,
 	}
 

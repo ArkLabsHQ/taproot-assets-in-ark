@@ -55,7 +55,7 @@ func spendBoardingTransfer(assetId []byte, boardingTransfer ArkBoardingTransfer,
 func CreateRoundTransfer(boardingTransfer ArkBoardingTransfer, assetId []byte, user, server *TapClient, level uint64) ([]ProofTxMsg, []byte, string) {
 	unpublisedProofList := make([]ProofTxMsg, 0)
 
-	rootKeys := CreateAssetKeys(assetId, boardingTransfer.boardingAmount, user, server)
+	_, rootKeys := CreateAssetKeys(assetId, boardingTransfer.boardingAmount, user, server)
 
 	unpublishedRootTransfer := spendBoardingTransfer(assetId, boardingTransfer, rootKeys.address, server)
 	btcControlBlock := extractControlBlock(rootKeys.arkScript, unpublishedRootTransfer.taprootAssetRoot)
@@ -90,8 +90,8 @@ func createIntermediateChainTransfer(assetId []byte, amount uint64, arkChainTran
 		return
 	}
 
-	leftKeys := CreateAssetKeys(assetId, amount/2, user, server)
-	rightKeys := CreateAssetKeys(assetId, amount/2, user, server)
+	_, leftKeys := CreateAssetKeys(assetId, amount/2, user, server)
+	_, rightKeys := CreateAssetKeys(assetId, amount/2, user, server)
 
 	addresses := []*address.Tap{leftKeys.address, rightKeys.address}
 	// Note: This create a VPacket
@@ -156,19 +156,35 @@ func createIntermediateChainTransfer(assetId []byte, amount uint64, arkChainTran
 }
 
 func createFinalChainTransfer(assetId []byte, amount uint64, arkChainTransfer ArkRoundChainTransfer, user, server *TapClient, unpublishedProofList *[]ProofTxMsg) {
-	addr_resp, err := user.client.NewAddr(context.TODO(), &taprpc.NewAddrRequest{
+	left_addr_resp, err := user.client.NewAddr(context.TODO(), &taprpc.NewAddrRequest{
 		AssetId: assetId,
-		Amt:     amount,
+		Amt:     amount / 2,
 	})
+
 	if err != nil {
-		log.Fatalf("cannot get address %v", err)
+		log.Fatalf("cannot get left address %v", err)
 	}
-	addr, err := address.DecodeAddress(addr_resp.Encoded, &address.RegressionNetTap)
+
+	right_addr_resp, err := user.client.NewAddr(context.TODO(), &taprpc.NewAddrRequest{
+		AssetId: assetId,
+		Amt:     amount / 2,
+	})
+
+	if err != nil {
+		log.Fatalf("cannot get right address %v", err)
+	}
+
+	left_addr, err := address.DecodeAddress(left_addr_resp.Encoded, &address.RegressionNetTap)
 	if err != nil {
 		log.Fatalf("cannot decode address %v", err)
 	}
-	addresses := make([]*address.Tap, 1)
-	addresses[0] = addr
+
+	right_addr, err := address.DecodeAddress(right_addr_resp.Encoded, &address.RegressionNetTap)
+	if err != nil {
+		log.Fatalf("cannot decode address %v", err)
+	}
+
+	addresses := []*address.Tap{left_addr, right_addr}
 	// Note: This create a VPacket
 	fundedPkt, err := tappsbt.FromAddresses(addresses, LEFT_TRANSFER_OUTPUT_INDEX)
 	if err != nil {
@@ -203,9 +219,13 @@ func createFinalChainTransfer(assetId []byte, amount uint64, arkChainTransfer Ar
 	btcTransferPkt.Inputs[TRANSFER_INPUT_INDEX].FinalScriptWitness = buf.Bytes()
 	signedPkt := server.FinalizePacket(btcTransferPkt)
 
-	unpublishedTransfer := DeriveUnpublishedChainTransfer(signedPkt, finalizedTransferPackets[0].Outputs[LEFT_TRANSFER_OUTPUT_INDEX])
-	newproofTxMsg := ProofTxMsg{TxMsg: unpublishedTransfer.finalTx, Proof: unpublishedTransfer.transferProof}
-	*unpublishedProofList = append(*unpublishedProofList, newproofTxMsg)
+	leftUnpublishedTransfer := DeriveUnpublishedChainTransfer(signedPkt, finalizedTransferPackets[0].Outputs[LEFT_TRANSFER_OUTPUT_INDEX])
+	rightUnpublishedTransfer := DeriveUnpublishedChainTransfer(signedPkt, finalizedTransferPackets[0].Outputs[RIGHT_TRANSFER_OUTPUT_INDEX])
+
+	leftProofTxMsg := ProofTxMsg{TxMsg: leftUnpublishedTransfer.finalTx, Proof: leftUnpublishedTransfer.transferProof}
+	rightProofTxMsg := ProofTxMsg{TxMsg: rightUnpublishedTransfer.finalTx, Proof: rightUnpublishedTransfer.transferProof}
+
+	*unpublishedProofList = append(*unpublishedProofList, leftProofTxMsg, rightProofTxMsg)
 
 	log.Println("Final Asset Transferred")
 

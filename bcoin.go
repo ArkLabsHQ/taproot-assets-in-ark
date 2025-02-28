@@ -19,7 +19,7 @@ type BitcoinClient struct {
 func GetBitcoinClient() BitcoinClient {
 	// Set up the connection configuration for your btcd RPC server.
 	connCfg := &rpcclient.ConnConfig{
-		Host:         "localhost:18443", // btcd's RPC host:port
+		Host:         "localhost:18444", // btcd's RPC host:port
 		User:         "polaruser",       // RPC username
 		Pass:         "polarpass",       // RPC password
 		HTTPPostMode: true,              // btcd only supports HTTP POST mode
@@ -41,7 +41,7 @@ func (b BitcoinClient) SendTransaction(transaction *wire.MsgTx) BitcoinSendTxRes
 		log.Fatalf("cannot send raw transaction %v", err)
 	}
 
-	log.Println("Boarding Transaction Spent")
+	log.Println("transaction_sent")
 
 	address1, err := b.client.GetNewAddress("")
 	if err != nil {

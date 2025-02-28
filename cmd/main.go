@@ -49,7 +49,7 @@ func main() {
 	lockBlockHeight := currentBlockHeight + 4320
 
 	assetId, _ := hex.DecodeString("eac09b42101643e8143416032fcbd45d58786a4bc3dd6c5a2eb8529bf2e2b2dc")
-	ammt := 10
+	ammt := 40
 
 	boardingUserLndClient := taponark.InitLndClient(boardingUserLndRpcHostPort, boardingUserLndRpcPort, boardingUserLndTLSCert, boardingUserLndMacaroon)
 	boardingUserTapClient := taponark.InitTapClient(boardingUserRPCHostPort, boardingUserRPCPort, boardingUserTapTLSCert, boardingUserTapMacaroon, boardingUserLndClient)

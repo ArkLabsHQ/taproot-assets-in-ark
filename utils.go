@@ -16,6 +16,7 @@ const BOARDING_TRANSFER_OUTPUT_INDEX = 1
 const TRANSFER_INPUT_INDEX = 0
 const LEFT_TRANSFER_OUTPUT_INDEX = 1
 const RIGHT_TRANSFER_OUTPUT_INDEX = 2
+const CHANGE_OUTPUT_INDEX = 0
 
 func DeriveUnpublishedChainTransfer(btcPacket *psbt.Packet, transferOutput *tappsbt.VOutput) ChainTransfer {
 	internalKey := transferOutput.AnchorOutputInternalKey

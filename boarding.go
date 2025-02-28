@@ -11,23 +11,8 @@ import (
 // user tap client
 
 func SpendToBoardingTransaction(assetId []byte, amnt uint64, lockHeight uint32, userTapClient, serverTapClient *TapClient) ArkBoardingTransfer {
-	userScriptKey, userInternalKey := userTapClient.GetNextKeys()
-	serverScriptKey, serverInternalKey := serverTapClient.GetNextKeys()
 
-	// 1. Create Both Bording Ark Script and Boarding Ark Asset Script
-	arkScript, err := CreateBoardingArkScript(userInternalKey.PubKey, serverInternalKey.PubKey)
-	if err != nil {
-		log.Fatal(err)
-	}
-	arkAssetScript := CreateBoardingArkAssetScript(userScriptKey.RawKey.PubKey, serverScriptKey.RawKey.PubKey)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	addr, err := serverTapClient.GetBoardingAddress(arkScript.Branch, arkAssetScript.tapScriptKey, assetId, amnt)
-	if err != nil {
-		log.Fatal(err)
-	}
+	addr, boardingKeys := CreateAssetKeys(assetId, amnt, userTapClient, serverTapClient)
 
 	// 2. Send From User To Boarding Address
 	sendResp, err := userTapClient.SendAsset(addr)
@@ -43,12 +28,12 @@ func SpendToBoardingTransaction(assetId []byte, amnt uint64, lockHeight uint32, 
 		InternalKey: btcInternalKey,
 	}
 	// Transfer is always output 1
-	transferOutput := sendResp.Transfer.Outputs[1]
+	transferOutput := sendResp.Transfer.Outputs[BOARDING_TRANSFER_OUTPUT_INDEX]
 	multiSigOutAnchor := transferOutput.Anchor
-	rightNodeHash := arkScript.unilateralSpend.TapHash()
+	rightNodeHash := boardingKeys.arkScript.unilateralSpend.TapHash()
 	inclusionproof := append(rightNodeHash[:], multiSigOutAnchor.TaprootAssetRoot[:]...)
 	btcControlBlock.InclusionProof = inclusionproof
-	rootHash := btcControlBlock.RootHash(arkScript.cooperativeSpend.Script)
+	rootHash := btcControlBlock.RootHash(boardingKeys.arkScript.cooperativeSpend.Script)
 	tapKey := txscript.ComputeTaprootOutputKey(btcInternalKey, rootHash)
 	if tapKey.SerializeCompressed()[0] ==
 		secp256k1.PubKeyFormatCompressedOdd {
@@ -59,18 +44,17 @@ func SpendToBoardingTransaction(assetId []byte, amnt uint64, lockHeight uint32, 
 	//TODO (Joshua) Ensure To Improve
 	log.Println("Asset Transfered")
 	bcoinClient := GetBitcoinClient()
-	address1, err := bcoinClient.GetNewAddress("")
+	address1, err := bcoinClient.client.GetNewAddress("")
 	if err != nil {
 		log.Fatalf("cannot generate address %v", err)
 	}
 	maxretries := int64(3)
-	_, err = bcoinClient.GenerateToAddress(1, address1, &maxretries)
+	_, err = bcoinClient.client.GenerateToAddress(1, address1, &maxretries)
 	if err != nil {
 		log.Fatalf("cannot generate to address %v", err)
 	}
 	serverTapClient.IncomingTransferEvent(addr)
-
-	arkTransfer := ArkTransfer{btcControlBlock, userScriptKey, userInternalKey, serverScriptKey, serverInternalKey, arkScript, arkAssetScript}
+	arkTransfer := ArkTransfer{btcControlBlock, boardingKeys}
 
 	log.Println("Boarding Transaction Published Onchain")
 	return ArkBoardingTransfer{arkTransfer, transferOutput, amnt, userTapClient}
