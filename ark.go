@@ -71,10 +71,12 @@ type ChainTransfer struct {
 }
 
 type ArkBoardingTransfer struct {
-	arkTransferDetails ArkTransfer
-	previousOutput     *taprpc.TransferOutput
-	boardingAmount     uint64
-	user               *TapClient
+	arkTransferDetails  ArkTransfer
+	assetPreviousOutput *taprpc.TransferOutput
+	assetBoardingAmount uint64
+	btcBoardingAmount   uint64
+	btcTransferDetails  *wire.MsgTx
+	user                *TapClient
 }
 
 type ArkRoundChainTransfer struct {

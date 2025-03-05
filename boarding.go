@@ -1,45 +1,57 @@
 package taponark
 
 import (
+	"bytes"
+	"context"
 	"log"
 
 	"github.com/btcsuite/btcd/txscript"
-	"github.com/decred/dcrd/dcrec/secp256k1/v4"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/taproot-assets/asset"
+	"github.com/lightningnetwork/lnd/lnrpc"
+	"github.com/lightningnetwork/lnd/lnrpc/signrpc"
+	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
 )
 
 // user tap client
 
-func SpendToBoardingTransaction(assetId []byte, amnt uint64, lockHeight uint32, userTapClient, serverTapClient *TapClient) ArkBoardingTransfer {
+func SpendToBoardingTransaction(assetId []byte, asset_amnt uint64, btc_amnt uint64, lockHeight uint32, boardingClient, serverTapClient *TapClient) ArkBoardingTransfer {
 
-	addr, boardingKeys := CreateAssetKeys(assetId, amnt, userTapClient, serverTapClient)
+	addr, boardingKeys := CreateAssetKeys(assetId, asset_amnt, boardingClient, serverTapClient)
 
-	// 2. Send From User To Boarding Address
-	sendResp, err := userTapClient.SendAsset(addr)
-
+	// 2. Send Asset From  Boarding User To Boarding Address
+	sendResp, err := boardingClient.SendAsset(addr)
 	if err != nil {
 		log.Fatalf("cannot send to address %v", err)
 	}
 
-	// spend from Boarding Address
-	btcInternalKey := asset.NUMSPubKey
-	btcControlBlock := &txscript.ControlBlock{
-		LeafVersion: txscript.BaseLeafVersion,
-		InternalKey: btcInternalKey,
+	// 3. Send BTC From Boarding User To Boarding Address
+	rootHash := boardingKeys.arkScript.Branch.TapHash()
+	btcSendResp, err := boardingClient.lndClient.wallet.SendOutputs(context.TODO(), &walletrpc.SendOutputsRequest{
+		SatPerKw: 2,
+		Outputs: []*signrpc.TxOut{
+			{
+				Value:    int64(btc_amnt),
+				PkScript: txscript.ComputeTaprootOutputKey(asset.NUMSPubKey, rootHash[:]).SerializeCompressed(),
+			},
+		},
+		MinConfs:              1,
+		SpendUnconfirmed:      false,
+		CoinSelectionStrategy: lnrpc.CoinSelectionStrategy_STRATEGY_USE_GLOBAL_CONFIG,
+	})
+	if err != nil {
+		log.Fatalf("cannot send btc to address %v", err)
 	}
-	// Transfer is always output 1
-	transferOutput := sendResp.Transfer.Outputs[BOARDING_TRANSFER_OUTPUT_INDEX]
-	multiSigOutAnchor := transferOutput.Anchor
-	rightNodeHash := boardingKeys.arkScript.unilateralSpend.TapHash()
-	inclusionproof := append(rightNodeHash[:], multiSigOutAnchor.TaprootAssetRoot[:]...)
-	btcControlBlock.InclusionProof = inclusionproof
-	rootHash := btcControlBlock.RootHash(boardingKeys.arkScript.cooperativeSpend.Script)
-	tapKey := txscript.ComputeTaprootOutputKey(btcInternalKey, rootHash)
-	if tapKey.SerializeCompressed()[0] ==
-		secp256k1.PubKeyFormatCompressedOdd {
 
-		btcControlBlock.OutputKeyYIsOdd = true
+	// Deserialize the raw transaction bytes into the transaction.
+	msgTx := wire.NewMsgTx(wire.TxVersion)
+	if err := msgTx.Deserialize(bytes.NewReader(btcSendResp.RawTx)); err != nil {
+		log.Fatalf("failed to deserialize transaction: %v", err)
 	}
+
+	assetTransferOutput := sendResp.Transfer.Outputs[BOARDING_TRANSFER_OUTPUT_INDEX]
+	taprootAssetRoot := assetTransferOutput.Anchor.TaprootAssetRoot
+	controlBlock := extractControlBlock(boardingKeys.arkScript, taprootAssetRoot)
 
 	//TODO (Joshua) Ensure To Improve
 	log.Println("Asset Transfered")
@@ -54,8 +66,8 @@ func SpendToBoardingTransaction(assetId []byte, amnt uint64, lockHeight uint32, 
 		log.Fatalf("cannot generate to address %v", err)
 	}
 	serverTapClient.IncomingTransferEvent(addr)
-	arkTransfer := ArkTransfer{btcControlBlock, boardingKeys}
+	arkTransfer := ArkTransfer{controlBlock, boardingKeys}
 
 	log.Println("Boarding Transaction Published Onchain")
-	return ArkBoardingTransfer{arkTransfer, transferOutput, amnt, userTapClient}
+	return ArkBoardingTransfer{arkTransfer, assetTransferOutput, asset_amnt, btc_amnt, msgTx, boardingClient}
 }

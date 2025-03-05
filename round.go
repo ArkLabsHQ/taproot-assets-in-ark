@@ -15,13 +15,13 @@ import (
 func spendBoardingTransfer(assetId []byte, boardingTransfer ArkBoardingTransfer, transferAddress *address.Tap, server *TapClient) ChainTransfer {
 	addresses := []*address.Tap{transferAddress}
 	// Note: This create a VPacket
-	fundedPkt, err := tappsbt.FromAddresses(addresses, LEFT_TRANSFER_OUTPUT_INDEX)
+	fundedPkt, err := tappsbt.FromAddresses(addresses, BOARDING_TRANSFER_OUTPUT_INDEX)
 	if err != nil {
 		log.Fatalf("cannot generate packet from address %v", err)
 	}
 
 	// Note: This add input details
-	createAndSetInput(fundedPkt, TRANSFER_INPUT_INDEX, boardingTransfer.previousOutput, assetId)
+	createAndSetInput(fundedPkt, TRANSFER_INPUT_INDEX, boardingTransfer.assetPreviousOutput, assetId)
 
 	// Note: This add output details
 	tapsend.PrepareOutputAssets(context.TODO(), fundedPkt)
@@ -55,19 +55,19 @@ func spendBoardingTransfer(assetId []byte, boardingTransfer ArkBoardingTransfer,
 func CreateRoundTransfer(boardingTransfer ArkBoardingTransfer, assetId []byte, user, server *TapClient, level uint64) ([]ProofTxMsg, []byte, string) {
 	unpublisedProofList := make([]ProofTxMsg, 0)
 
-	_, rootKeys := CreateAssetKeys(assetId, boardingTransfer.boardingAmount, user, server)
+	_, rootKeys := CreateAssetKeys(assetId, boardingTransfer.assetBoardingAmount, user, server)
 
 	unpublishedRootTransfer := spendBoardingTransfer(assetId, boardingTransfer, rootKeys.address, server)
 	btcControlBlock := extractControlBlock(rootKeys.arkScript, unpublishedRootTransfer.taprootAssetRoot)
 	rootTransferDetails := ArkTransfer{btcControlBlock, rootKeys}
 	rootChainTransfer := ArkRoundChainTransfer{arkTransferDetails: rootTransferDetails, unpublishedTransfer: unpublishedRootTransfer}
 
-	createIntermediateChainTransfer(assetId, boardingTransfer.boardingAmount, rootChainTransfer, level-1, user, server, &unpublisedProofList)
+	createIntermediateChainTransfer(assetId, boardingTransfer.assetBoardingAmount, rootChainTransfer, level-1, user, server, &unpublisedProofList)
 
 	// Broadcast the round Transfer
 	fullproof, err := server.client.ExportProof(context.TODO(), &taprpc.ExportProofRequest{
 		AssetId:   assetId,
-		ScriptKey: boardingTransfer.previousOutput.ScriptKey,
+		ScriptKey: boardingTransfer.assetPreviousOutput.ScriptKey,
 	})
 	if err != nil {
 		log.Fatalf("cannot export proof %v", err)
@@ -114,6 +114,7 @@ func createIntermediateChainTransfer(assetId []byte, amount uint64, arkChainTran
 		log.Fatal(err)
 	}
 
+	//Adds Fees and commit
 	btcTransferPkt, finalizedTransferPackets, _, _ := server.CommitVirtualPsbts(
 		transferBtcPkt, vPackets, nil, -1,
 	)

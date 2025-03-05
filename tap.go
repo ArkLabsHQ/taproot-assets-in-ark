@@ -367,6 +367,117 @@ func (cl *TapClient) FinalizePacket(
 	return signedPacket
 }
 
+func (cl *TapClient) CreateAnchorTx(vPackets []*tappsbt.VPacket, anchorOutputs []*wire.TxOut) (*psbt.Packet, error) {
+	// create a template TX with the correct number of outputs.
+	for _, vPkt := range vPackets {
+		// Sanity check the output indexes provided by the sender. There
+		// must be at least one output.
+		if len(vPkt.Outputs) == 0 {
+			return nil, tapsend.ErrInvalidOutputIndexes
+		}
+	}
+
+	txTemplate := wire.NewMsgTx(2)
+
+	// Zero is a valid anchor output index, so we need to do <= here.
+	for _, anchorOutput := range anchorOutputs {
+		txTemplate.AddTxOut(anchorOutput)
+	}
+
+	spendPkt, err := psbt.NewFromUnsignedTx(txTemplate)
+	if err != nil {
+		return nil, fmt.Errorf("unable to make psbt packet: %w", err)
+	}
+
+	// With the dummy packet created, we'll walk through of vOutputs to set
+	// the taproot internal key for each of the outputs.
+	for _, vPkt := range vPackets {
+		for i := range vPkt.Outputs {
+			vOut := vPkt.Outputs[i]
+
+			btcOut := &spendPkt.Outputs[vOut.AnchorOutputIndex]
+			btcOut.TaprootInternalKey = schnorr.SerializePubKey(
+				vOut.AnchorOutputInternalKey,
+			)
+
+			bip32 := vOut.AnchorOutputBip32Derivation
+			for idx := range bip32 {
+				btcOut.Bip32Derivation =
+					tappsbt.AddBip32Derivation(
+						btcOut.Bip32Derivation,
+						bip32[idx],
+					)
+			}
+			trBip32 := vOut.AnchorOutputTaprootBip32Derivation
+			for idx := range trBip32 {
+				btcOut.TaprootBip32Derivation =
+					tappsbt.AddTaprootBip32Derivation(
+						btcOut.TaprootBip32Derivation,
+						trBip32[idx],
+					)
+			}
+		}
+	}
+
+	return spendPkt, nil
+}
+
+func (cl *TapClient) AddBtcInputToAnchorTemplate(btcAnchor *psbt.Packet, txin *wire.TxOut) {
+	btcAnchor.Inputs = append(btcAnchor.Inputs, psbt.PInput{
+		WitnessUtxo: txin,
+	})
+}
+
+func (cl *TapClient) PrepareAnchoringTemplate(
+	vPackets []*tappsbt.VPacket, anchorOutputs []*wire.TxOut) (*psbt.Packet, error) {
+
+	err := tapsend.ValidateVPacketVersions(vPackets)
+	if err != nil {
+		return nil, err
+	}
+
+	btcPacket, err := cl.CreateAnchorTx(vPackets, anchorOutputs)
+	if err != nil {
+		return nil, err
+	}
+
+	// Populate input information now. We add the witness UTXO and
+	// derivation path information for each asset input. Since the virtual
+	// transactions might refer to the same BTC level input, we need to make
+	// sure we don't add any duplicate inputs.
+	for pIdx := range vPackets {
+		for iIdx := range vPackets[pIdx].Inputs {
+			vIn := vPackets[pIdx].Inputs[iIdx]
+			anchor := vIn.Anchor
+
+			if tapsend.HasInput(btcPacket.UnsignedTx, vIn.PrevID.OutPoint) {
+				continue
+			}
+
+			btcPacket.Inputs = append(btcPacket.Inputs, psbt.PInput{
+				WitnessUtxo: &wire.TxOut{
+					Value:    int64(anchor.Value),
+					PkScript: anchor.PkScript,
+				},
+				SighashType:            anchor.SigHashType,
+				Bip32Derivation:        anchor.Bip32Derivation,
+				TaprootBip32Derivation: anchor.TrBip32Derivation,
+				TaprootInternalKey: schnorr.SerializePubKey(
+					anchor.InternalKey,
+				),
+				TaprootMerkleRoot: anchor.MerkleRoot,
+			})
+			btcPacket.UnsignedTx.TxIn = append(
+				btcPacket.UnsignedTx.TxIn, &wire.TxIn{
+					PreviousOutPoint: vIn.PrevID.OutPoint,
+				},
+			)
+		}
+	}
+
+	return btcPacket, nil
+}
+
 func (cl *TapClient) LogAndPublish(
 	btcPkt *psbt.Packet, activeAssets []*tappsbt.VPacket,
 	passiveAssets []*tappsbt.VPacket,
