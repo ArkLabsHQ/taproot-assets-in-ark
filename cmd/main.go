@@ -45,25 +45,23 @@ func main() {
 		serverLndRPCHostPort = "localhost:" + serverLndRpcPort
 	)
 
-	currentBlockHeight := 300
-	lockBlockHeight := currentBlockHeight + 4320
-
 	assetId, _ := hex.DecodeString("eac09b42101643e8143416032fcbd45d58786a4bc3dd6c5a2eb8529bf2e2b2dc")
-	ammt := 40
+	boardingAssetAmnt := 40
+	boardingBtcAmnt := 100_000
 
 	boardingUserLndClient := taponark.InitLndClient(boardingUserLndRpcHostPort, boardingUserLndRpcPort, boardingUserLndTLSCert, boardingUserLndMacaroon)
 	boardingUserTapClient := taponark.InitTapClient(boardingUserRPCHostPort, boardingUserRPCPort, boardingUserTapTLSCert, boardingUserTapMacaroon, boardingUserLndClient)
 
 	exitUserLndClient := taponark.InitLndClient(exitUserLndRpcHostPort, exitUserLndRpcPort, exitUserLndTLSCert, exitUserLndMacaroon)
-	exitUserTapClient := taponark.InitTapClient(exitUserRPCHostPort, exitUserRPCPort, exitUserTapTLSCert, exitUserTapMacaroon, exitUserLndClient)
+	_ = taponark.InitTapClient(exitUserRPCHostPort, exitUserRPCPort, exitUserTapTLSCert, exitUserTapMacaroon, exitUserLndClient)
 
 	serverLndClient := taponark.InitLndClient(serverLndRPCHostPort, serverLndRpcPort, serverLndTLSCert, serverLndMacaroon)
 	serverTapClient := taponark.InitTapClient(serverRPCHostPort, serverRPCPort, serverTapTLSCert, serverTapMacaroon, serverLndClient)
 
-	boardingTransferDetails := taponark.SpendToBoardingTransaction(assetId, uint64(ammt), uint32(lockBlockHeight), &boardingUserTapClient, &serverTapClient)
+	_ = taponark.SpendToBoardingTransaction(assetId, uint64(boardingAssetAmnt), uint64(boardingBtcAmnt), &boardingUserTapClient, &serverTapClient)
 
-	proofList, proofFile, genesisPoint := taponark.CreateRoundTransfer(boardingTransferDetails, assetId, &exitUserTapClient, &serverTapClient, 2)
-	taponark.PublishTransfersAndSubmitProofs(assetId, proofList, genesisPoint, proofFile, &exitUserTapClient)
+	// proofList, proofFile, genesisPoint := taponark.CreateRoundTransfer(boardingTransferDetails, assetId, &exitUserTapClient, &serverTapClient, 2)
+	// taponark.PublishTransfersAndSubmitProofs(assetId, proofList, genesisPoint, proofFile, &exitUserTapClient)
 	// wait for transfer to reach
 
 }

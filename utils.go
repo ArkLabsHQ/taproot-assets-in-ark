@@ -46,17 +46,17 @@ func DeriveUnpublishedChainTransfer(btcPacket *psbt.Packet, transferOutput *tapp
 
 }
 
-func extractControlBlock(arkScript ArkScript, taprootAssetRoot []byte) *txscript.ControlBlock {
+func extractControlBlock(arkBtcScript ArkBtcScript, taprootAssetRoot []byte) *txscript.ControlBlock {
 	btcInternalKey := asset.NUMSPubKey
 	btcControlBlock := &txscript.ControlBlock{
 		LeafVersion: txscript.BaseLeafVersion,
 		InternalKey: btcInternalKey,
 	}
 
-	rightNodeHash := arkScript.unilateralSpend.TapHash()
+	rightNodeHash := arkBtcScript.unilateralSpend.TapHash()
 	inclusionproof := append(rightNodeHash[:], taprootAssetRoot[:]...)
 	btcControlBlock.InclusionProof = inclusionproof
-	rootHash := btcControlBlock.RootHash(arkScript.cooperativeSpend.Script)
+	rootHash := btcControlBlock.RootHash(arkBtcScript.cooperativeSpend.Script)
 	tapKey := txscript.ComputeTaprootOutputKey(btcInternalKey, rootHash)
 	if tapKey.SerializeCompressed()[0] ==
 		secp256k1.PubKeyFormatCompressedOdd {

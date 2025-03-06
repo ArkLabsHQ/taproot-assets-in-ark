@@ -15,24 +15,45 @@ import (
 
 // user tap client
 
-func SpendToBoardingTransaction(assetId []byte, asset_amnt uint64, btc_amnt uint64, lockHeight uint32, boardingClient, serverTapClient *TapClient) ArkBoardingTransfer {
+func SpendToBoardingTransaction(assetId []byte, asset_amnt uint64, btc_amnt uint64, boardingClient, serverTapClient *TapClient) ArkBoardingTransfer {
 
-	addr, boardingKeys := CreateAssetKeys(assetId, asset_amnt, boardingClient, serverTapClient)
-
-	// 2. Send Asset From  Boarding User To Boarding Address
-	sendResp, err := boardingClient.SendAsset(addr)
+	/// 1. Send Asset From  Boarding User To Boarding Address
+	assetSpendingDetails := CreateBoardingSpendingDetails(boardingClient, serverTapClient)
+	arkBtcScript := assetSpendingDetails.arkBtcScript
+	arkAssetScript := assetSpendingDetails.arkAssetScript
+	addr_resp, err := serverTapClient.GetNewAddress(arkBtcScript.Branch, arkAssetScript.tapScriptKey, assetId, asset_amnt)
+	if err != nil {
+		log.Fatalf("cannot get address %v", err)
+	}
+	sendResp, err := boardingClient.SendAsset(addr_resp)
 	if err != nil {
 		log.Fatalf("cannot send to address %v", err)
 	}
 
-	// 3. Send BTC From Boarding User To Boarding Address
-	rootHash := boardingKeys.arkScript.Branch.TapHash()
+	assetTransferOutput := sendResp.Transfer.Outputs[BOARDING_TRANSFER_OUTPUT_INDEX]
+	taprootAssetRoot := assetTransferOutput.Anchor.TaprootAssetRoot
+	assetControlBlock := extractControlBlock(assetSpendingDetails.arkBtcScript, taprootAssetRoot)
+	assetSpendingDetails.arkBtcScript.controlBlock = assetControlBlock
+	assetTransferDetails := AssetTransferDetails{assetTransferOutput, assetSpendingDetails, asset_amnt}
+	log.Println("Boarding Asset Transfered")
+
+	/// 2. Send BTC From Boarding User To Boarding Address
+	btcSpendingDetails := CreateBoardingSpendingDetails(boardingClient, serverTapClient)
+	btcControlBlock := extractControlBlock(assetSpendingDetails.arkBtcScript, []byte{0})
+	assetSpendingDetails.arkBtcScript.controlBlock = btcControlBlock
+	rootHash := btcControlBlock.RootHash(arkBtcScript.cooperativeSpend.Script)
+	outputKey := txscript.ComputeTaprootOutputKey(asset.NUMSPubKey, rootHash)
+	pkScript, err := txscript.PayToTaprootScript(outputKey)
+	if err != nil {
+		log.Fatalf("cannot create Pay To Taproot Script")
+	}
+
 	btcSendResp, err := boardingClient.lndClient.wallet.SendOutputs(context.TODO(), &walletrpc.SendOutputsRequest{
-		SatPerKw: 2,
+		SatPerKw: 2000,
 		Outputs: []*signrpc.TxOut{
 			{
 				Value:    int64(btc_amnt),
-				PkScript: txscript.ComputeTaprootOutputKey(asset.NUMSPubKey, rootHash[:]).SerializeCompressed(),
+				PkScript: pkScript,
 			},
 		},
 		MinConfs:              1,
@@ -49,25 +70,34 @@ func SpendToBoardingTransaction(assetId []byte, asset_amnt uint64, btc_amnt uint
 		log.Fatalf("failed to deserialize transaction: %v", err)
 	}
 
-	assetTransferOutput := sendResp.Transfer.Outputs[BOARDING_TRANSFER_OUTPUT_INDEX]
-	taprootAssetRoot := assetTransferOutput.Anchor.TaprootAssetRoot
-	controlBlock := extractControlBlock(boardingKeys.arkScript, taprootAssetRoot)
+	var txout *wire.TxOut = nil
+	var transferOutpoint *wire.OutPoint = nil
+	for index, output := range msgTx.TxOut {
+		if bytes.Equal(output.PkScript, pkScript) {
+			txout = output
+			transferOutpoint = &wire.OutPoint{
+				Hash:  msgTx.TxHash(),
+				Index: uint32(index),
+			}
+		}
+	}
+
+	if txout == nil || transferOutpoint == nil {
+		log.Fatalf("Transfer Cannot be made")
+	}
+
+	btcTransferDetails := BtcTransferDetails{
+		txout, transferOutpoint, btc_amnt, btcSpendingDetails,
+	}
+
+	log.Println("Boarding Bitcoin Transfered")
 
 	//TODO (Joshua) Ensure To Improve
-	log.Println("Asset Transfered")
 	bcoinClient := GetBitcoinClient()
-	address1, err := bcoinClient.client.GetNewAddress("")
-	if err != nil {
-		log.Fatalf("cannot generate address %v", err)
-	}
-	maxretries := int64(3)
-	_, err = bcoinClient.client.GenerateToAddress(1, address1, &maxretries)
-	if err != nil {
-		log.Fatalf("cannot generate to address %v", err)
-	}
-	serverTapClient.IncomingTransferEvent(addr)
-	arkTransfer := ArkTransfer{controlBlock, boardingKeys}
+	bcoinClient.MineBlock()
+
+	serverTapClient.IncomingTransferEvent(addr_resp)
 
 	log.Println("Boarding Transaction Published Onchain")
-	return ArkBoardingTransfer{arkTransfer, assetTransferOutput, asset_amnt, btc_amnt, msgTx, boardingClient}
+	return ArkBoardingTransfer{assetTransferDetails, btcTransferDetails, boardingClient}
 }

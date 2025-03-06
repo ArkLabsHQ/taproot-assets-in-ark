@@ -77,7 +77,7 @@ func InitTapClient(hostPort, tapdport, tlsData, macaroonData string, lndClient L
 
 }
 
-func (cl *TapClient) GetBoardingAddress(scriptBranch txscript.TapBranch, assetScriptKey asset.ScriptKey, assetId []byte, amnt uint64) (*taprpc.Addr, error) {
+func (cl *TapClient) GetNewAddress(scriptBranch txscript.TapBranch, assetScriptKey asset.ScriptKey, assetId []byte, amnt uint64) (*taprpc.Addr, error) {
 
 	btcInternalKey := asset.NUMSPubKey
 
@@ -391,33 +391,34 @@ func (cl *TapClient) CreateAnchorTx(vPackets []*tappsbt.VPacket, anchorOutputs [
 
 	// With the dummy packet created, we'll walk through of vOutputs to set
 	// the taproot internal key for each of the outputs.
-	for _, vPkt := range vPackets {
-		for i := range vPkt.Outputs {
-			vOut := vPkt.Outputs[i]
+	// TODO: Ensure to set the Taproot Internal Keys In the Outputs
+	// for _, vPkt := range vPackets {
+	// 	for i := range vPkt.Outputs {
+	// 		vOut := vPkt.Outputs[i]
 
-			btcOut := &spendPkt.Outputs[vOut.AnchorOutputIndex]
-			btcOut.TaprootInternalKey = schnorr.SerializePubKey(
-				vOut.AnchorOutputInternalKey,
-			)
+	// 		btcOut := &spendPkt.Outputs[vOut.AnchorOutputIndex]
+	// 		btcOut.TaprootInternalKey = schnorr.SerializePubKey(
+	// 			vOut.AnchorOutputInternalKey,
+	// 		)
 
-			bip32 := vOut.AnchorOutputBip32Derivation
-			for idx := range bip32 {
-				btcOut.Bip32Derivation =
-					tappsbt.AddBip32Derivation(
-						btcOut.Bip32Derivation,
-						bip32[idx],
-					)
-			}
-			trBip32 := vOut.AnchorOutputTaprootBip32Derivation
-			for idx := range trBip32 {
-				btcOut.TaprootBip32Derivation =
-					tappsbt.AddTaprootBip32Derivation(
-						btcOut.TaprootBip32Derivation,
-						trBip32[idx],
-					)
-			}
-		}
-	}
+	// 		bip32 := vOut.AnchorOutputBip32Derivation
+	// 		for idx := range bip32 {
+	// 			btcOut.Bip32Derivation =
+	// 				tappsbt.AddBip32Derivation(
+	// 					btcOut.Bip32Derivation,
+	// 					bip32[idx],
+	// 				)
+	// 		}
+	// 		trBip32 := vOut.AnchorOutputTaprootBip32Derivation
+	// 		for idx := range trBip32 {
+	// 			btcOut.TaprootBip32Derivation =
+	// 				tappsbt.AddTaprootBip32Derivation(
+	// 					btcOut.TaprootBip32Derivation,
+	// 					trBip32[idx],
+	// 				)
+	// 		}
+	// 	}
+	// }
 
 	return spendPkt, nil
 }
@@ -428,7 +429,7 @@ func (cl *TapClient) AddBtcInputToAnchorTemplate(btcAnchor *psbt.Packet, txin *w
 	})
 }
 
-func (cl *TapClient) PrepareAnchoringTemplate(
+func (cl *TapClient) CreateAndSetBtcInput(
 	vPackets []*tappsbt.VPacket, anchorOutputs []*wire.TxOut) (*psbt.Packet, error) {
 
 	err := tapsend.ValidateVPacketVersions(vPackets)
@@ -767,9 +768,9 @@ func (m *muSig2PartialSigner) Execute(*asset.Asset, []*commitment.SplitAsset,
 	return nil
 }
 
-// createAndSetInput creates a virtual packet input for the given asset input
+// createAndSetAssetInput creates a virtual packet input for the given asset input
 // and sets it on the given virtual packet.
-func createAndSetInput(vPkt *tappsbt.VPacket, idx int,
+func createAndSetAssetInput(vPkt *tappsbt.VPacket, idx int,
 	roundDetails *taprpc.TransferOutput, assetId []byte) error {
 
 	// At this point, we have a valid "coin" to spend in the commitment, so
