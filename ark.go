@@ -12,6 +12,7 @@ import (
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/lightninglabs/taproot-assets/asset"
 	"github.com/lightninglabs/taproot-assets/proof"
+	"github.com/lightninglabs/taproot-assets/tappsbt"
 	"github.com/lightninglabs/taproot-assets/taprpc"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -396,33 +397,33 @@ func CreateRoundArkAssetScript(
 	return ArkAssetScript{userNonces, serverNonces, tapScriptKey, cooperativeSpend, unilateralExit, tree, controlBlock}
 }
 
-// func CreateAndInsertAssetWitness(arkTransferDetails ArkSpendingDetails, fundedPkt *tappsbt.VPacket, user, server *TapClient) {
-// 	_, serverSessionId := server.partialSignAssetTransfer(fundedPkt,
-// 		&arkTransferDetails.ArkAssetKeys.arkAssetScript.leaves[0], arkTransferDetails.ArkAssetKeys.serverScriptKey.RawKey, arkTransferDetails.ArkAssetKeys.arkAssetScript.serverNonce, arkTransferDetails.ArkAssetKeys.userScriptKey.RawKey.PubKey, arkTransferDetails.ArkAssetKeys.arkAssetScript.userNonce.PubNonce)
+func CreateAndInsertAssetWitness(arkSpendingDetails ArkSpendingDetails, fundedPkt *tappsbt.VPacket, user, server *TapClient) {
+	_, serverSessionId := server.partialSignAssetTransfer(fundedPkt,
+		&arkSpendingDetails.arkAssetScript.cooperativeSpend, arkSpendingDetails.serverScriptKey.RawKey, arkSpendingDetails.arkAssetScript.serverNonce, arkSpendingDetails.userScriptKey.RawKey.PubKey, arkSpendingDetails.arkAssetScript.userNonce.PubNonce)
 
-// 	userPartialSig, _ := user.partialSignAssetTransfer(fundedPkt,
-// 		&arkTransferDetails.ArkAssetKeys.arkAssetScript.leaves[0], arkTransferDetails.ArkAssetKeys.userScriptKey.RawKey, arkTransferDetails.ArkAssetKeys.arkAssetScript.userNonce, arkTransferDetails.ArkAssetKeys.serverScriptKey.RawKey.PubKey, arkTransferDetails.ArkAssetKeys.arkAssetScript.serverNonce.PubNonce)
+	log.Println("created asset partial for server")
 
-// 	log.Println("created asset partial sig for user")
+	userPartialSig, _ := user.partialSignAssetTransfer(fundedPkt,
+		&arkSpendingDetails.arkAssetScript.cooperativeSpend, arkSpendingDetails.userScriptKey.RawKey, arkSpendingDetails.arkAssetScript.userNonce, arkSpendingDetails.serverScriptKey.RawKey.PubKey, arkSpendingDetails.arkAssetScript.serverNonce.PubNonce)
 
-// 	log.Println("created asset partial for server")
+	log.Println("created asset partial sig for user")
 
-// 	transferAssetWitness := server.combineSigs(serverSessionId, userPartialSig, arkTransferDetails.ArkAssetKeys.arkAssetScript.leaves[0], arkTransferDetails.ArkAssetKeys.arkAssetScript.tree, arkTransferDetails.ArkAssetKeys.arkAssetScript.controlBlock)
+	transferAssetWitness := server.combineSigs(serverSessionId, userPartialSig, arkSpendingDetails.arkAssetScript.cooperativeSpend, arkSpendingDetails.arkAssetScript.tree, arkSpendingDetails.arkAssetScript.controlBlock)
 
-// 	// update transferAsset Witnesss [Nothing Needs To Change]
-// 	for idx := range fundedPkt.Outputs {
-// 		asset := fundedPkt.Outputs[idx].Asset
-// 		firstPrevWitness := &asset.PrevWitnesses[0]
-// 		if asset.HasSplitCommitmentWitness() {
-// 			rootAsset := firstPrevWitness.SplitCommitment.RootAsset
-// 			firstPrevWitness = &rootAsset.PrevWitnesses[0]
-// 		}
-// 		firstPrevWitness.TxWitness = transferAssetWitness
-// 	}
+	// update transferAsset Witnesss [Nothing Needs To Change]
+	for idx := range fundedPkt.Outputs {
+		asset := fundedPkt.Outputs[idx].Asset
+		firstPrevWitness := &asset.PrevWitnesses[0]
+		if asset.HasSplitCommitmentWitness() {
+			rootAsset := firstPrevWitness.SplitCommitment.RootAsset
+			firstPrevWitness = &rootAsset.PrevWitnesses[0]
+		}
+		firstPrevWitness.TxWitness = transferAssetWitness
+	}
 
-// 	changeOutput := fundedPkt.Outputs[CHANGE_OUTPUT_INDEX]
-// 	changeOutput.AnchorOutputInternalKey = asset.NUMSPubKey
-// }
+	changeOutput := fundedPkt.Outputs[CHANGE_OUTPUT_INDEX]
+	changeOutput.AnchorOutputInternalKey = asset.NUMSPubKey
+}
 
 // func CreateBtcWitness(arkTransferDetails ArkSpendingDetails, btcPacket *psbt.Packet, user, server *TapClient) wire.TxWitness {
 // 	btcControlBlockBytes, err := arkTransferDetails.btcControlBlock.ToBytes()

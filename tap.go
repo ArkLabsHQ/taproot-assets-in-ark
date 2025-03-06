@@ -247,97 +247,118 @@ func (cl *TapClient) combineSigs(sessID,
 
 // Note: Commits Outputs pkscripts
 func (cl *TapClient) CommitVirtualPsbts(
-	packet *psbt.Packet, activePackets []*tappsbt.VPacket,
-	passivePackets []*tappsbt.VPacket,
-	changeOutputIndex int32) (*psbt.Packet, []*tappsbt.VPacket,
-	[]*tappsbt.VPacket, *assetwalletrpc.CommitVirtualPsbtsResponse) {
+	fundedPacket *psbt.Packet, activePackets []*tappsbt.VPacket) (*psbt.Packet, []*tappsbt.VPacket) {
 
-	var buf bytes.Buffer
-	err := packet.Serialize(&buf)
-	if err != nil {
-		log.Fatal(err)
-	}
+	outputCommitments := make(tappsbt.OutputCommitments)
 
-	request := &assetwalletrpc.CommitVirtualPsbtsRequest{
-		AnchorPsbt: buf.Bytes(),
-		Fees: &assetwalletrpc.CommitVirtualPsbtsRequest_SatPerVbyte{
-			// TODO: Verify this
-			SatPerVbyte: uint64(2000 / 1000),
-		},
-	}
-
-	type existingIndex = assetwalletrpc.CommitVirtualPsbtsRequest_ExistingOutputIndex
-	if changeOutputIndex < 0 {
-		request.AnchorChangeOutput = &assetwalletrpc.CommitVirtualPsbtsRequest_Add{
-			Add: true,
-		}
-	} else {
-		request.AnchorChangeOutput = &existingIndex{
-			ExistingOutputIndex: changeOutputIndex,
+	// And now we commit each packet to the respective anchor output
+	// commitments.
+	for _, vPkt := range activePackets {
+		err := cl.commitPacket(vPkt, outputCommitments)
+		if err != nil {
+			log.Fatal(err)
 		}
 	}
 
-	request.VirtualPsbts = make([][]byte, len(activePackets))
+	// We're done creating the output commitments, we can now create the
+	// transition proof suffixes.
 	for idx := range activePackets {
-		request.VirtualPsbts[idx], err = tappsbt.Encode(
-			activePackets[idx],
-		)
-		if err != nil {
-			log.Fatal(err)
-		}
+		vPkt := activePackets[idx]
 
-	}
-	request.PassiveAssetPsbts = make([][]byte, len(passivePackets))
-	for idx := range passivePackets {
-		request.PassiveAssetPsbts[idx], err = tappsbt.Encode(
-			passivePackets[idx],
-		)
-		if err != nil {
-			log.Fatal(err)
-		}
+		for vOutIdx := range vPkt.Outputs {
+			proofSuffix, err := tapsend.CreateProofSuffix(
+				fundedPacket.UnsignedTx, fundedPacket.Outputs,
+				vPkt, outputCommitments, vOutIdx, activePackets,
+			)
+			if err != nil {
+				log.Fatal(err)
+			}
 
+			vPkt.Outputs[vOutIdx].ProofSuffix = proofSuffix
+		}
 	}
 
-	// Now we can map the virtual packets to the PSBT.
-	commitResponse, err := cl.wallet.CommitVirtualPsbts(context.TODO(), request)
+	return fundedPacket, activePackets
+}
+
+// commitPacket creates the output commitments for a virtual packet and merges
+// it with the existing commitments for the anchor outputs.
+func (cl *TapClient) commitPacket(vPkt *tappsbt.VPacket,
+	outputCommitments tappsbt.OutputCommitments) error {
+
+	inputs := vPkt.Inputs
+	outputs := vPkt.Outputs
+
+	// One virtual packet is only allowed to contain inputs and outputs of
+	// the same asset ID. Fungible assets must be sent in separate packets.
+	firstInputID := inputs[0].Asset().ID()
+	for idx := range inputs {
+		if inputs[idx].Asset().ID() != firstInputID {
+			return fmt.Errorf("inputs must have the same asset ID")
+		}
+	}
+
+	// Set the output commitment version based on the vPkt version.
+	outputCommitmentVersion, err := tappsbt.CommitmentVersion(vPkt.Version)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
-	fundedPacket, err := psbt.NewFromRawBytes(
-		bytes.NewReader(commitResponse.AnchorPsbt), false,
-	)
-	if err != nil {
-		log.Fatal(err)
-	}
+	for idx := range outputs {
+		vOut := outputs[idx]
+		anchorOutputIdx := vOut.AnchorOutputIndex
 
-	activePackets = make(
-		[]*tappsbt.VPacket, len(commitResponse.VirtualPsbts),
-	)
-	for idx := range commitResponse.VirtualPsbts {
-		activePackets[idx], err = tappsbt.Decode(
-			commitResponse.VirtualPsbts[idx],
-		)
-		if err != nil {
-			log.Fatal(err)
+		if vOut.Asset == nil {
+			return fmt.Errorf("output %d is missing asset", idx)
 		}
 
-	}
-
-	passivePackets = make(
-		[]*tappsbt.VPacket, len(commitResponse.PassiveAssetPsbts),
-	)
-	for idx := range commitResponse.PassiveAssetPsbts {
-		passivePackets[idx], err = tappsbt.Decode(
-			commitResponse.PassiveAssetPsbts[idx],
+		sendTapCommitment, err := commitment.FromAssets(
+			outputCommitmentVersion, vOut.Asset,
 		)
 		if err != nil {
-			log.Fatal(err)
+			return fmt.Errorf("error committing assets: %w", err)
 		}
+
+		// Because the receiver of this output might be receiving
+		// through an address (non-interactive), we need to blank out
+		// the split commitment proof, as the receiver doesn't know of
+		// this information yet. The final commitment will be to a leaf
+		// without the split commitment proof, that proof will be
+		// delivered in the proof file as part of the non-interactive
+		// send. We do the same even for interactive sends to not need
+		// to distinguish between the two cases in the proof file
+		// itself.
+		sendTapCommitment, err = commitment.TrimSplitWitnesses(
+			outputCommitmentVersion, sendTapCommitment,
+		)
+		if err != nil {
+			return fmt.Errorf("error trimming split witnesses: %w",
+				err)
+		}
+
+		// If the vOutput contains any AltLeaves, merge them into the
+		// tap commitment.
+		err = sendTapCommitment.MergeAltLeaves(vOut.AltLeaves)
+		if err != nil {
+			return fmt.Errorf("error merging alt leaves: %w", err)
+		}
+
+		// Merge the finished TAP level commitment with the existing
+		// one (if any) for the anchor output.
+		anchorOutputCommitment, ok := outputCommitments[anchorOutputIdx]
+		if ok {
+			err = sendTapCommitment.Merge(anchorOutputCommitment)
+			if err != nil {
+				return fmt.Errorf("unable to merge output "+
+					"commitment: %w", err)
+			}
+		}
+
+		outputCommitments[anchorOutputIdx] = sendTapCommitment
 
 	}
 
-	return fundedPacket, activePackets, passivePackets, commitResponse
+	return nil
 }
 
 func (cl *TapClient) FinalizePacket(
@@ -365,118 +386,6 @@ func (cl *TapClient) FinalizePacket(
 	}
 
 	return signedPacket
-}
-
-func (cl *TapClient) CreateAnchorTx(vPackets []*tappsbt.VPacket, anchorOutputs []*wire.TxOut) (*psbt.Packet, error) {
-	// create a template TX with the correct number of outputs.
-	for _, vPkt := range vPackets {
-		// Sanity check the output indexes provided by the sender. There
-		// must be at least one output.
-		if len(vPkt.Outputs) == 0 {
-			return nil, tapsend.ErrInvalidOutputIndexes
-		}
-	}
-
-	txTemplate := wire.NewMsgTx(2)
-
-	// Zero is a valid anchor output index, so we need to do <= here.
-	for _, anchorOutput := range anchorOutputs {
-		txTemplate.AddTxOut(anchorOutput)
-	}
-
-	spendPkt, err := psbt.NewFromUnsignedTx(txTemplate)
-	if err != nil {
-		return nil, fmt.Errorf("unable to make psbt packet: %w", err)
-	}
-
-	// With the dummy packet created, we'll walk through of vOutputs to set
-	// the taproot internal key for each of the outputs.
-	// TODO: Ensure to set the Taproot Internal Keys In the Outputs
-	// for _, vPkt := range vPackets {
-	// 	for i := range vPkt.Outputs {
-	// 		vOut := vPkt.Outputs[i]
-
-	// 		btcOut := &spendPkt.Outputs[vOut.AnchorOutputIndex]
-	// 		btcOut.TaprootInternalKey = schnorr.SerializePubKey(
-	// 			vOut.AnchorOutputInternalKey,
-	// 		)
-
-	// 		bip32 := vOut.AnchorOutputBip32Derivation
-	// 		for idx := range bip32 {
-	// 			btcOut.Bip32Derivation =
-	// 				tappsbt.AddBip32Derivation(
-	// 					btcOut.Bip32Derivation,
-	// 					bip32[idx],
-	// 				)
-	// 		}
-	// 		trBip32 := vOut.AnchorOutputTaprootBip32Derivation
-	// 		for idx := range trBip32 {
-	// 			btcOut.TaprootBip32Derivation =
-	// 				tappsbt.AddTaprootBip32Derivation(
-	// 					btcOut.TaprootBip32Derivation,
-	// 					trBip32[idx],
-	// 				)
-	// 		}
-	// 	}
-	// }
-
-	return spendPkt, nil
-}
-
-func (cl *TapClient) AddBtcInputToAnchorTemplate(btcAnchor *psbt.Packet, txin *wire.TxOut) {
-	btcAnchor.Inputs = append(btcAnchor.Inputs, psbt.PInput{
-		WitnessUtxo: txin,
-	})
-}
-
-func (cl *TapClient) CreateAndSetBtcInput(
-	vPackets []*tappsbt.VPacket, anchorOutputs []*wire.TxOut) (*psbt.Packet, error) {
-
-	err := tapsend.ValidateVPacketVersions(vPackets)
-	if err != nil {
-		return nil, err
-	}
-
-	btcPacket, err := cl.CreateAnchorTx(vPackets, anchorOutputs)
-	if err != nil {
-		return nil, err
-	}
-
-	// Populate input information now. We add the witness UTXO and
-	// derivation path information for each asset input. Since the virtual
-	// transactions might refer to the same BTC level input, we need to make
-	// sure we don't add any duplicate inputs.
-	for pIdx := range vPackets {
-		for iIdx := range vPackets[pIdx].Inputs {
-			vIn := vPackets[pIdx].Inputs[iIdx]
-			anchor := vIn.Anchor
-
-			if tapsend.HasInput(btcPacket.UnsignedTx, vIn.PrevID.OutPoint) {
-				continue
-			}
-
-			btcPacket.Inputs = append(btcPacket.Inputs, psbt.PInput{
-				WitnessUtxo: &wire.TxOut{
-					Value:    int64(anchor.Value),
-					PkScript: anchor.PkScript,
-				},
-				SighashType:            anchor.SigHashType,
-				Bip32Derivation:        anchor.Bip32Derivation,
-				TaprootBip32Derivation: anchor.TrBip32Derivation,
-				TaprootInternalKey: schnorr.SerializePubKey(
-					anchor.InternalKey,
-				),
-				TaprootMerkleRoot: anchor.MerkleRoot,
-			})
-			btcPacket.UnsignedTx.TxIn = append(
-				btcPacket.UnsignedTx.TxIn, &wire.TxIn{
-					PreviousOutPoint: vIn.PrevID.OutPoint,
-				},
-			)
-		}
-	}
-
-	return btcPacket, nil
 }
 
 func (cl *TapClient) LogAndPublish(

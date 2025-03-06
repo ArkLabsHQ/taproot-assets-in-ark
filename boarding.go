@@ -5,9 +5,14 @@ import (
 	"context"
 	"log"
 
+	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/taproot-assets/address"
 	"github.com/lightninglabs/taproot-assets/asset"
+	"github.com/lightninglabs/taproot-assets/tappsbt"
+	"github.com/lightninglabs/taproot-assets/tapsend"
+	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/signrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
@@ -100,4 +105,52 @@ func SpendToBoardingTransaction(assetId []byte, asset_amnt uint64, btc_amnt uint
 
 	log.Println("Boarding Transaction Published Onchain")
 	return ArkBoardingTransfer{assetTransferDetails, btcTransferDetails, boardingClient}
+}
+
+func SpendFromBoardingTransfer(assetId []byte, boardingTransfer ArkBoardingTransfer, spendingDetails ArkSpendingDetails, server *TapClient) ChainTransfer {
+	//
+	/// 1. Create Asset Transfer
+	assetAmount := boardingTransfer.assetTransferDetails.assetBoardingAmount
+	previousAssetSpendingDetails := boardingTransfer.assetTransferDetails.arkSpendingDetails
+	// Fix
+	fundedPkt := tappsbt.ForInteractiveSend(asset.ID(assetId), assetAmount, spendingDetails.arkAssetScript.tapScriptKey, 0, 0, 0,
+		keychain.KeyDescriptor{
+			PubKey: asset.NUMSPubKey,
+		}, asset.V0, &address.RegressionNetTap)
+
+	// Note: This add asset input details
+	createAndSetAssetInput(fundedPkt, TRANSFER_INPUT_INDEX, boardingTransfer.assetTransferDetails.assetTransferOutput, assetId)
+
+	// Note: This add output details
+	tapsend.PrepareOutputAssets(context.TODO(), fundedPkt)
+	CreateAndInsertAssetWitness(previousAssetSpendingDetails, fundedPkt, boardingTransfer.user, server)
+	vPackets := []*tappsbt.VPacket{fundedPkt}
+
+	//
+	//2. Create BTC Transfer
+	btcAmount := boardingTransfer.btcTransferDetails.btcBoardingAmount + 1_000
+	fee := int64(10_000)
+	transferBtcPkt, err := tapsend.PrepareAnchoringTemplate(vPackets)
+	if err != nil {
+		log.Fatal(err)
+	}
+	//modify the output to reflect the combination of normal plus asset
+	transferBtcPkt.UnsignedTx.TxOut[0].Value = int64(btcAmount) - fee
+
+	btcTransferPkt, finalizedTransferPackets := server.CommitVirtualPsbts(
+		transferBtcPkt, vPackets,
+	)
+
+	btcTxWitness := CreateBtcWitness(boardingTransfer.arkSpendingDetails, btcTransferPkt, boardingTransfer.user, server)
+	var buf bytes.Buffer
+	err = psbt.WriteTxWitness(&buf, btcTxWitness)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	btcTransferPkt.Inputs[TRANSFER_INPUT_INDEX].FinalScriptWitness = buf.Bytes()
+	signedPkt := server.FinalizePacket(btcTransferPkt)
+
+	unpublishedTransfer := DeriveUnpublishedChainTransfer(signedPkt, finalizedTransferPackets[0].Outputs[BOARDING_TRANSFER_OUTPUT_INDEX])
+	return unpublishedTransfer
 }
