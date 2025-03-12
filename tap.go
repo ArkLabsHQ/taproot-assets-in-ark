@@ -111,6 +111,19 @@ func (cl *TapClient) SendAsset(addr *taprpc.Addr) (*taprpc.SendAssetResponse, er
 	)
 }
 
+func (cl *TapClient) ExportProof(assetId []byte, scriptKey []byte) *taprpc.ProofFile {
+	fullProof, err := cl.client.ExportProof(context.TODO(), &taprpc.ExportProofRequest{
+		AssetId:   assetId,
+		ScriptKey: scriptKey,
+	})
+
+	if err != nil {
+		log.Fatalf("cannot export proof %v", err)
+	}
+
+	return fullProof
+}
+
 func (cl *TapClient) GetNextKeys() (asset.ScriptKey,
 	keychain.KeyDescriptor) {
 
@@ -247,7 +260,7 @@ func (cl *TapClient) combineSigs(sessID,
 
 // Note: Commits Outputs pkscripts
 func (cl *TapClient) CommitVirtualPsbts(
-	fundedPacket *psbt.Packet, activePackets []*tappsbt.VPacket) (*psbt.Packet, []*tappsbt.VPacket) {
+	fundedPacket *psbt.Packet, activePackets []*tappsbt.VPacket) {
 
 	outputCommitments := make(tappsbt.OutputCommitments)
 
@@ -257,6 +270,17 @@ func (cl *TapClient) CommitVirtualPsbts(
 		err := cl.commitPacket(vPkt, outputCommitments)
 		if err != nil {
 			log.Fatal(err)
+		}
+	}
+
+	// Create and Update Taproot Output Keys
+	for _, vPkt := range activePackets {
+		err := tapsend.UpdateTaprootOutputKeys(
+			fundedPacket, vPkt, outputCommitments,
+		)
+		if err != nil {
+			log.Fatalf("error updating taproot output "+
+				"keys: %v", err)
 		}
 	}
 
@@ -278,7 +302,6 @@ func (cl *TapClient) CommitVirtualPsbts(
 		}
 	}
 
-	return fundedPacket, activePackets
 }
 
 // commitPacket creates the output commitments for a virtual packet and merges
@@ -361,33 +384,6 @@ func (cl *TapClient) commitPacket(vPkt *tappsbt.VPacket,
 	return nil
 }
 
-func (cl *TapClient) FinalizePacket(
-	pkt *psbt.Packet) *psbt.Packet {
-
-	var buf bytes.Buffer
-	err := pkt.Serialize(&buf)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	finalizeResp, err := cl.lndClient.wallet.FinalizePsbt(context.TODO(), &walletrpc.FinalizePsbtRequest{
-		FundedPsbt: buf.Bytes(),
-	})
-
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	signedPacket, err := psbt.NewFromRawBytes(
-		bytes.NewReader(finalizeResp.SignedPsbt), false,
-	)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	return signedPacket
-}
-
 func (cl *TapClient) LogAndPublish(
 	btcPkt *psbt.Packet, activeAssets []*tappsbt.VPacket,
 	passiveAssets []*tappsbt.VPacket,
@@ -434,38 +430,52 @@ func (cl *TapClient) LogAndPublish(
 	return resp
 }
 
-func (cl *TapClient) partialSignBtcTransfer(pkt *psbt.Packet, inputIndex uint32,
-	key keychain.KeyDescriptor, controlBlockBytes []byte,
-	tapLeaf txscript.TapLeaf) []byte {
-
-	leafToSign := []*psbt.TaprootTapLeafScript{{
-		ControlBlock: controlBlockBytes,
-		Script:       tapLeaf.Script,
-		LeafVersion:  tapLeaf.LeafVersion,
-	}}
+func (cl *TapClient) partialSignBtcTransfer(pkt *psbt.Packet, length int,
+	keys []keychain.KeyDescriptor, controlBlockBytesList [][]byte,
+	tapLeaves []txscript.TapLeaf) [][]byte {
 
 	// The lnd SignPsbt RPC doesn't really understand multi-sig yet, we
 	// cannot specify multiple keys that need to sign. So what we do here
 	// is just replace the derivation path info for the input we want to
 	// sign to the key we want to sign with. If we do this for every signing
 	// participant, we'll get the correct signatures for OP_CHECKSIGADD.
-	signInput := &pkt.Inputs[inputIndex]
-	derivation, trDerivation := tappsbt.Bip32DerivationFromKeyDesc(
-		key, chaincfg.RegressionNetParams.HDCoinType,
-	)
-	trDerivation.LeafHashes = [][]byte{fn.ByteSlice(tapLeaf.TapHash())}
-	signInput.Bip32Derivation = []*psbt.Bip32Derivation{derivation}
-	signInput.TaprootBip32Derivation = []*psbt.TaprootBip32Derivation{
-		trDerivation,
-	}
-	signInput.TaprootLeafScript = leafToSign
-	signInput.SighashType = txscript.SigHashDefault
 
-	var buf bytes.Buffer
-	err := pkt.Serialize(&buf)
+	for i := 0; i < length; i++ {
+		leafToSign := []*psbt.TaprootTapLeafScript{{
+			ControlBlock: controlBlockBytesList[i],
+			Script:       tapLeaves[i].Script,
+			LeafVersion:  tapLeaves[i].LeafVersion,
+		}}
+		signInput := &pkt.Inputs[i]
+		derivation, trDerivation := tappsbt.Bip32DerivationFromKeyDesc(
+			keys[i], chaincfg.RegressionNetParams.HDCoinType,
+		)
+		trDerivation.LeafHashes = [][]byte{fn.ByteSlice(tapLeaves[i].TapHash())}
+		signInput.Bip32Derivation = []*psbt.Bip32Derivation{derivation}
+		signInput.TaprootBip32Derivation = []*psbt.TaprootBip32Derivation{
+			trDerivation,
+		}
+		signInput.TaprootLeafScript = leafToSign
+		signInput.SighashType = txscript.SigHashDefault
+	}
+
+	err := pkt.SanityCheck()
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	var buf bytes.Buffer
+	err = pkt.Serialize(&buf)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	b64, err := pkt.B64Encode()
+	if err != nil {
+		log.Fatalf("failed to Encode pkt")
+
+	}
+	log.Println(b64)
 
 	resp, err := cl.lndClient.wallet.SignPsbt(
 		context.TODO(), &walletrpc.SignPsbtRequest{
@@ -484,7 +494,12 @@ func (cl *TapClient) partialSignBtcTransfer(pkt *psbt.Packet, inputIndex uint32,
 	// Make sure the input we wanted to sign for was actually signed.
 	// require.Contains(t, resp.SignedInputs, inputIndex)
 
-	return result.Inputs[inputIndex].TaprootScriptSpendSig[0].Signature
+	signatures := make([][]byte, length)
+	for i := 0; i < length; i++ {
+		signatures[i] = result.Inputs[i].TaprootScriptSpendSig[0].Signature
+	}
+
+	return signatures
 }
 
 func (cl *TapClient) partialSignAssetTransfer(assetTransferPacket *tappsbt.VPacket, assetLeaf *txscript.TapLeaf, localScriptKeyDescriptor keychain.KeyDescriptor,
@@ -517,12 +532,12 @@ func (cl *TapClient) partialSignAssetTransfer(assetTransferPacket *tappsbt.VPack
 		assetTransferPacket, partialSigner, partialSigner,
 	)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("error is one %v", err)
 	}
 
 	isSplit, err := assetTransferPacket.HasSplitCommitment()
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("error is two %v", err)
 	}
 
 	// Identify new output asset. For splits, the new asset that received
@@ -531,7 +546,7 @@ func (cl *TapClient) partialSignAssetTransfer(assetTransferPacket *tappsbt.VPack
 	if isSplit {
 		splitOut, err := assetTransferPacket.SplitRootOutput()
 		if err != nil {
-			log.Fatal(err)
+			log.Fatalf("error is three %v", err)
 		}
 
 		newAsset = splitOut.Asset

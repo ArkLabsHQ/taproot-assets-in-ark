@@ -44,18 +44,17 @@ func PublishTransfersAndSubmitProofs(assetId []byte, proofList []ProofTxMsg, gen
 
 	rootSentMessage := bcoinClient.SendTransaction(proofList[0].TxMsg)
 
-	processParentAndChild := func(parentSentMessage BitcoinSendTxResult, parent, leftchild, rightchild ProofTxMsg, proofFile []byte) {
+	processParentAndChild := func(parentSentMessage BitcoinSendTxResult, parent, leftchild ProofTxMsg, proofFile []byte) {
 		updatedProof := UpdateAndAppendProof(proofFile, parent.TxMsg, parent.Proof, parentSentMessage)
 
 		sentLeftMessage := bcoinClient.SendTransaction(leftchild.TxMsg)
 		updatedLeftProof := UpdateAndAppendProof(updatedProof, leftchild.TxMsg, leftchild.Proof, sentLeftMessage)
-		updatedRightProof := UpdateAndAppendProof(updatedProof, rightchild.TxMsg, rightchild.Proof, sentLeftMessage)
 
-		updatedProofList = append(updatedProofList, updatedLeftProof, updatedRightProof)
+		updatedProofList = append(updatedProofList, updatedLeftProof)
 	}
 
-	processParentAndChild(rootSentMessage, proofList[0], proofList[2], proofList[3], proofFile)
-	processParentAndChild(rootSentMessage, proofList[1], proofList[4], proofList[5], proofFile)
+	processParentAndChild(rootSentMessage, proofList[0], proofList[2], proofFile)
+	processParentAndChild(rootSentMessage, proofList[1], proofList[3], proofFile)
 
 	log.Println("Exit Proof appended")
 

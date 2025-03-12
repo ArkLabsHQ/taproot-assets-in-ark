@@ -3,6 +3,8 @@ package taponark
 import (
 	"log"
 
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
@@ -13,6 +15,8 @@ import (
 )
 
 const BOARDING_TRANSFER_OUTPUT_INDEX = 1
+const ASSET_BOARDING_INPUT_INDEX = 0
+const BTC_BOARDING_INPUT_INDEX = 1
 const TRANSFER_INPUT_INDEX = 0
 const LEFT_TRANSFER_OUTPUT_INDEX = 1
 const RIGHT_TRANSFER_OUTPUT_INDEX = 2
@@ -41,8 +45,9 @@ func DeriveUnpublishedChainTransfer(btcPacket *psbt.Packet, transferOutput *tapp
 	outpoint := wire.NewOutPoint(&txhash, transferOutput.AnchorOutputIndex)
 
 	anchorValue := btcPacket.UnsignedTx.TxOut[transferOutput.AnchorOutputIndex].Value
+	assetAmount := transferOutput.Amount
 
-	return ChainTransfer{finalTx, outpoint, transferOutput.ProofSuffix, merkleRoot, taprootSibling, internalKey, scriptKey, anchorValue, taprootAssetRoot}
+	return ChainTransfer{finalTx, outpoint, transferOutput.ProofSuffix, merkleRoot, taprootSibling, internalKey, scriptKey, anchorValue, taprootAssetRoot, assetAmount}
 
 }
 
@@ -65,4 +70,48 @@ func extractControlBlock(arkBtcScript ArkBtcScript, taprootAssetRoot []byte) *tx
 	}
 
 	return btcControlBlock
+}
+
+func addBtcInput(transferPacket *psbt.Packet, btcTransferDetails BtcTransferDetails) {
+	signingDetails := btcTransferDetails
+
+	transferPacket.UnsignedTx.TxIn = append(
+		transferPacket.UnsignedTx.TxIn, &wire.TxIn{
+			PreviousOutPoint: *signingDetails.outpoint,
+		},
+	)
+
+	controlBlock := signingDetails.arkSpendingDetails.arkBtcScript.controlBlock
+	rootHash := controlBlock.RootHash(signingDetails.arkSpendingDetails.arkBtcScript.cooperativeSpend.Script)
+	transferPacket.Inputs = append(transferPacket.Inputs, psbt.PInput{
+		WitnessUtxo: signingDetails.txout,
+		TaprootInternalKey: schnorr.SerializePubKey(
+			asset.NUMSPubKey,
+		),
+		TaprootMerkleRoot: rootHash,
+	})
+
+}
+
+func addBtcOutput(transferPacket *psbt.Packet, amount uint64, address btcutil.Address) {
+	pkscript, err := txscript.PayToAddrScript(address)
+
+	if err != nil {
+		log.Fatalf("cannot convert address to script %v", err)
+	}
+
+	txout := wire.TxOut{
+		Value:    int64(amount),
+		PkScript: pkscript,
+	}
+
+	transferPacket.UnsignedTx.TxOut = append(
+		transferPacket.UnsignedTx.TxOut, &txout,
+	)
+
+	transferPacket.Outputs = append(transferPacket.Outputs, psbt.POutput{
+		TaprootInternalKey: address.ScriptAddress(),
+		TaprootTapTree:     nil,
+	})
+
 }

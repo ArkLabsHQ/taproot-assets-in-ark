@@ -7,6 +7,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
+	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
@@ -70,17 +71,18 @@ type ChainTransfer struct {
 	scriptKey        asset.ScriptKey
 	anchorValue      int64
 	taprootAssetRoot []byte
+	assetAmount      uint64
 }
 
 type ArkBoardingTransfer struct {
-	assetTransferDetails AssetTransferDetails
+	AssetTransferDetails AssetTransferDetails
 	btcTransferDetails   BtcTransferDetails
 	user                 *TapClient
 }
 
 type AssetTransferDetails struct {
-	assetTransferOutput *taprpc.TransferOutput
-	arkSpendingDetails  ArkSpendingDetails
+	AssetTransferOutput *taprpc.TransferOutput
+	ArkSpendingDetails  ArkSpendingDetails
 	assetBoardingAmount uint64
 }
 
@@ -91,12 +93,7 @@ type BtcTransferDetails struct {
 	arkSpendingDetails ArkSpendingDetails
 }
 
-type ArkRoundChainTransfer struct {
-	arkTransferDetails  ArkSpendingDetails
-	unpublishedTransfer ChainTransfer
-}
-
-func CreateRoundSpendingDetails(assetId []byte, amount uint64, user, server *TapClient) ArkSpendingDetails {
+func CreateRoundSpendingDetails(user, server *TapClient) ArkSpendingDetails {
 	userScriptKey, userInternalKey := user.GetNextKeys()
 	serverScriptKey, serverInternalKey := server.GetNextKeys()
 
@@ -135,17 +132,6 @@ func CreateBoardingSpendingDetails(user, server *TapClient) ArkSpendingDetails {
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	// TODO: (JOSHUA, FIX)
-	// addr_resp, err := server.GetNewAddress(arkBtcScript.Branch, arkAssetScript.tapScriptKey, assetId, amount)
-	// if err != nil {
-	// 	log.Fatalf("cannot get address %v", err)
-	// }
-	// transferAddress, err := address.DecodeAddress(addr_resp.Encoded, &address.RegressionNetTap)
-	// if err != nil {
-	// 	log.Fatalf("cannot decode address %v", err)
-	// }
-
 	return ArkSpendingDetails{userScriptKey, userInternalKey, serverScriptKey, serverInternalKey, arkBtcScript, arkAssetScript}
 
 }
@@ -421,31 +407,71 @@ func CreateAndInsertAssetWitness(arkSpendingDetails ArkSpendingDetails, fundedPk
 		firstPrevWitness.TxWitness = transferAssetWitness
 	}
 
+	// TODO: Might not be needed, Please Verify
 	changeOutput := fundedPkt.Outputs[CHANGE_OUTPUT_INDEX]
 	changeOutput.AnchorOutputInternalKey = asset.NUMSPubKey
 }
 
-// func CreateBtcWitness(arkTransferDetails ArkSpendingDetails, btcPacket *psbt.Packet, user, server *TapClient) wire.TxWitness {
-// 	btcControlBlockBytes, err := arkTransferDetails.btcControlBlock.ToBytes()
-// 	if err != nil {
-// 		log.Fatal(err)
-// 	}
-// 	assetInputIdx := uint32(TRANSFER_INPUT_INDEX)
-// 	serverBtcPartialSig := server.partialSignBtcTransfer(
-// 		btcPacket, assetInputIdx,
-// 		arkTransferDetails.ArkAssetKeys.serverInternalKey, btcControlBlockBytes, arkTransferDetails.ArkAssetKeys.arkScript.cooperativeSpend,
-// 	)
-// 	userBtcPartialSig := user.partialSignBtcTransfer(
-// 		btcPacket, assetInputIdx,
-// 		arkTransferDetails.ArkAssetKeys.userInternalKey, btcControlBlockBytes, arkTransferDetails.ArkAssetKeys.arkScript.cooperativeSpend,
-// 	)
+// Sign for two input if available (asset and btc) [ user and server sign ]
+func CreateBtcWitness(arkSpendingDetails []ArkSpendingDetails, btcPacket *psbt.Packet, inputLength int, user, server *TapClient) []wire.TxWitness {
+	serverbtcControlBytesList := make([][]byte, inputLength)
+	serverkeys := make([]keychain.KeyDescriptor, inputLength)
+	serverTapLeaves := make([]txscript.TapLeaf, inputLength)
 
-// 	txWitness := wire.TxWitness{
-// 		serverBtcPartialSig,
-// 		userBtcPartialSig,
-// 		arkTransferDetails.ArkAssetKeys.arkScript.cooperativeSpend.Script,
-// 		btcControlBlockBytes,
-// 	}
+	for i := 0; i < inputLength; i++ {
+		arkBtcScript := arkSpendingDetails[i].arkBtcScript
+		controlBlockBytes, err := arkBtcScript.controlBlock.ToBytes()
+		if err != nil {
+			log.Fatal(err)
+		}
+		serverbtcControlBytesList[i] = controlBlockBytes
+		serverkeys[i] = arkSpendingDetails[i].serverInternalKey
+		serverTapLeaves[i] = arkSpendingDetails[i].arkBtcScript.cooperativeSpend
 
-// 	return txWitness
-// }
+	}
+
+	serverBtcPartialSigs := server.partialSignBtcTransfer(
+		btcPacket, inputLength,
+		serverkeys, serverbtcControlBytesList, serverTapLeaves,
+	)
+
+	log.Println("created btc partial sig for server")
+
+	userbtcControlBytesList := make([][]byte, inputLength)
+	userkeys := make([]keychain.KeyDescriptor, inputLength)
+	userTapLeaves := make([]txscript.TapLeaf, inputLength)
+
+	for i := 0; i < inputLength; i++ {
+		arkBtcScript := arkSpendingDetails[i].arkBtcScript
+		controlBlockBytes, err := arkBtcScript.controlBlock.ToBytes()
+		if err != nil {
+			log.Fatal(err)
+		}
+		userbtcControlBytesList[i] = controlBlockBytes
+		userkeys[i] = arkSpendingDetails[i].userInternalKey
+		userTapLeaves[i] = arkSpendingDetails[i].arkBtcScript.cooperativeSpend
+
+	}
+
+	userBtcPartialSigs := user.partialSignBtcTransfer(
+		btcPacket, inputLength,
+		userkeys, userbtcControlBytesList, userTapLeaves,
+	)
+
+	log.Println("created btc partial sig for user")
+
+	txwitnessList := make([]wire.TxWitness, inputLength)
+
+	for i := 0; i < inputLength; i++ {
+		txWitness := wire.TxWitness{
+			serverBtcPartialSigs[i],
+			userBtcPartialSigs[i],
+			arkSpendingDetails[i].arkBtcScript.cooperativeSpend.Script,
+			serverbtcControlBytesList[i],
+		}
+
+		txwitnessList[i] = txWitness
+	}
+
+	return txwitnessList
+}
