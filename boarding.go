@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/taproot-assets/address"
 	"github.com/lightninglabs/taproot-assets/asset"
+	"github.com/lightninglabs/taproot-assets/commitment"
 	"github.com/lightninglabs/taproot-assets/tappsbt"
 	"github.com/lightninglabs/taproot-assets/tapsend"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -116,6 +117,11 @@ func SpendFromBoardingTransfer(assetId []byte, boardingTransfer ArkBoardingTrans
 		keychain.KeyDescriptor{
 			PubKey: asset.NUMSPubKey,
 		}, asset.V0, &address.RegressionNetTap)
+
+	// Encode Taproot Sibling
+	scriptBranchPreimage := commitment.NewPreimageFromBranch(nextSpendingDetails.arkBtcScript.Branch)
+	fundedPkt.Outputs[0].AnchorOutputTapscriptSibling = &scriptBranchPreimage
+
 	// Note: This add asset input details
 	createAndSetAssetInput(fundedPkt, TRANSFER_INPUT_INDEX, boardingTransfer.AssetTransferDetails.AssetTransferOutput, assetId)
 

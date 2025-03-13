@@ -3,8 +3,8 @@ package taponark
 import (
 	"log"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
-	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
@@ -93,8 +93,8 @@ func addBtcInput(transferPacket *psbt.Packet, btcTransferDetails BtcTransferDeta
 
 }
 
-func addBtcOutput(transferPacket *psbt.Packet, amount uint64, address btcutil.Address) {
-	pkscript, err := txscript.PayToAddrScript(address)
+func addBtcOutput(transferPacket *psbt.Packet, amount uint64, taprootKey *btcec.PublicKey, rawInternalKey []byte) {
+	pkscript, err := txscript.PayToTaprootScript(taprootKey)
 
 	if err != nil {
 		log.Fatalf("cannot convert address to script %v", err)
@@ -110,7 +110,7 @@ func addBtcOutput(transferPacket *psbt.Packet, amount uint64, address btcutil.Ad
 	)
 
 	transferPacket.Outputs = append(transferPacket.Outputs, psbt.POutput{
-		TaprootInternalKey: address.ScriptAddress(),
+		TaprootInternalKey: rawInternalKey,
 		TaprootTapTree:     nil,
 	})
 

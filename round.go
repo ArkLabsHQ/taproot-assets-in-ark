@@ -5,11 +5,14 @@ import (
 	"context"
 	"log"
 
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/txscript"
 	"github.com/lightninglabs/taproot-assets/address"
 	"github.com/lightninglabs/taproot-assets/asset"
+	"github.com/lightninglabs/taproot-assets/commitment"
 	"github.com/lightninglabs/taproot-assets/tappsbt"
 	"github.com/lightninglabs/taproot-assets/taprpc"
 	"github.com/lightninglabs/taproot-assets/tapsend"
@@ -55,11 +58,15 @@ func createIntermediateChainTransfer(assetId []byte, inputSpendingDetails ArkSpe
 		}, asset.V0, &address.RegressionNetTap)
 
 	fundedPkt.Outputs[0].Type = tappsbt.TypeSplitRoot
+	leftScriptBranchPreimage := commitment.NewPreimageFromBranch(leftOutputSpendingDetails.arkBtcScript.Branch)
+	fundedPkt.Outputs[0].AnchorOutputTapscriptSibling = &leftScriptBranchPreimage
 
 	tappsbt.AddOutput(fundedPkt, assetAmount, rightOutputSpendingDetail.arkAssetScript.tapScriptKey, 1,
 		keychain.KeyDescriptor{
 			PubKey: asset.NUMSPubKey,
 		}, asset.V0)
+	rightScriptBranchPreimage := commitment.NewPreimageFromBranch(rightOutputSpendingDetail.arkBtcScript.Branch)
+	fundedPkt.Outputs[1].AnchorOutputTapscriptSibling = &rightScriptBranchPreimage
 
 	// Note: This add input details
 	createAndSetInputIntermediate(fundedPkt, TRANSFER_INPUT_INDEX, inputChainTransfer, assetId)
@@ -164,6 +171,24 @@ func createFinalChainTransfer(assetId []byte, inputSpendingDetails ArkSpendingDe
 		log.Fatalf("cannot decode address %v", err)
 	}
 
+	// create public key
+	parsedInternalKey, err := schnorr.ParsePubKey(btc_addr.ScriptAddress())
+	if err != nil {
+		log.Fatalf("cannot parse Internal Key %v", err)
+	}
+
+	taprootKey := txscript.ComputeTaprootOutputKey(parsedInternalKey, []byte{})
+
+	// Import watch only wallet
+	_, err = user.lndClient.wallet.ImportPublicKey(context.TODO(), &walletrpc.ImportPublicKeyRequest{
+		PublicKey:   schnorr.SerializePubKey(taprootKey),
+		AddressType: walletrpc.AddressType_TAPROOT_PUBKEY,
+	})
+
+	if err != nil {
+		log.Fatalf("cannot import watch only %v", err)
+	}
+
 	addresses := []*address.Tap{asset_addr}
 	// Note: This create a VPacket
 	fundedPkt, err := tappsbt.FromAddresses(addresses, LEFT_TRANSFER_OUTPUT_INDEX)
@@ -184,7 +209,7 @@ func createFinalChainTransfer(assetId []byte, inputSpendingDetails ArkSpendingDe
 	if err != nil {
 		log.Fatal(err)
 	}
-	addBtcOutput(transferBtcPkt, uint64(btcAmount), btc_addr)
+	addBtcOutput(transferBtcPkt, uint64(btcAmount), taprootKey, btc_addr.ScriptAddress())
 
 	server.CommitVirtualPsbts(
 		transferBtcPkt, vPackets,
