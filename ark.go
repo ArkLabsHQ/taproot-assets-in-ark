@@ -11,7 +11,6 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
-	"github.com/lightninglabs/taproot-assets/address"
 	"github.com/lightninglabs/taproot-assets/asset"
 	"github.com/lightninglabs/taproot-assets/proof"
 	"github.com/lightninglabs/taproot-assets/tappsbt"
@@ -27,35 +26,39 @@ type ProofTxMsg struct {
 
 const LOCK_BLOCK_HEIGHT = 4320
 
-type ArkScript struct {
+type ArkBtcScript struct {
 	cooperativeSpend txscript.TapLeaf
 	unilateralSpend  txscript.TapLeaf
 	Branch           txscript.TapBranch
+	controlBlock     *txscript.ControlBlock
 }
 
 type ArkAssetScript struct {
 	userNonce    *musig2.Nonces
 	serverNonce  *musig2.Nonces
 	tapScriptKey asset.ScriptKey
-	leaves       []txscript.TapLeaf
+
+	cooperativeSpend txscript.TapLeaf
+	unilateralSpend  txscript.TapLeaf
+
 	tree         *txscript.IndexedTapScriptTree
 	controlBlock *txscript.ControlBlock
 }
 
-type ArkTransfer struct {
-	btcControlBlock *txscript.ControlBlock
-	ArkAssetKeys    ArkAssetKeys
-}
-
-type ArkAssetKeys struct {
+type ArkSpendingDetails struct {
 	userScriptKey     asset.ScriptKey
 	userInternalKey   keychain.KeyDescriptor
 	serverScriptKey   asset.ScriptKey
 	serverInternalKey keychain.KeyDescriptor
 
-	arkScript      ArkScript
+	arkBtcScript   ArkBtcScript
 	arkAssetScript ArkAssetScript
-	address        *address.Tap
+}
+
+type ArkBtcKeys struct {
+	arkScript         ArkBtcScript
+	userInternalKey   keychain.KeyDescriptor
+	serverInternalKey keychain.KeyDescriptor
 }
 
 type ChainTransfer struct {
@@ -68,25 +71,33 @@ type ChainTransfer struct {
 	scriptKey        asset.ScriptKey
 	anchorValue      int64
 	taprootAssetRoot []byte
+	assetAmount      uint64
 }
 
 type ArkBoardingTransfer struct {
-	arkTransferDetails ArkTransfer
-	previousOutput     *taprpc.TransferOutput
-	boardingAmount     uint64
-	user               *TapClient
+	AssetTransferDetails AssetTransferDetails
+	btcTransferDetails   BtcTransferDetails
+	user                 *TapClient
 }
 
-type ArkRoundChainTransfer struct {
-	arkTransferDetails  ArkTransfer
-	unpublishedTransfer ChainTransfer
+type AssetTransferDetails struct {
+	AssetTransferOutput *taprpc.TransferOutput
+	ArkSpendingDetails  ArkSpendingDetails
+	assetBoardingAmount uint64
 }
 
-func CreateAssetKeys(assetId []byte, amount uint64, user, server *TapClient) (*taprpc.Addr, ArkAssetKeys) {
+type BtcTransferDetails struct {
+	txout              *wire.TxOut
+	outpoint           *wire.OutPoint
+	btcBoardingAmount  uint64
+	arkSpendingDetails ArkSpendingDetails
+}
+
+func CreateRoundSpendingDetails(user, server *TapClient) ArkSpendingDetails {
 	userScriptKey, userInternalKey := user.GetNextKeys()
 	serverScriptKey, serverInternalKey := server.GetNextKeys()
 
-	arkScript, err := CreateRoundArkScript(userInternalKey.PubKey, serverInternalKey.PubKey)
+	arkBtcScript, err := CreateRoundArkBtcScript(userInternalKey.PubKey, serverInternalKey.PubKey)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -95,20 +106,50 @@ func CreateAssetKeys(assetId []byte, amount uint64, user, server *TapClient) (*t
 		log.Fatal(err)
 	}
 
-	addr_resp, err := server.GetBoardingAddress(arkScript.Branch, arkAssetScript.tapScriptKey, assetId, amount)
-	if err != nil {
-		log.Fatalf("cannot get address %v", err)
-	}
-	transferAddress, err := address.DecodeAddress(addr_resp.Encoded, &address.RegressionNetTap)
-	if err != nil {
-		log.Fatalf("cannot decode address %v", err)
-	}
+	// TODO: (JOSHUA, FIX)
+	// addr_resp, err := server.GetNewAddress(arkBtcScript.Branch, arkAssetScript.tapScriptKey, assetId, amount)
+	// if err != nil {
+	// 	log.Fatalf("cannot get address %v", err)
+	// }
+	// transferAddress, err := address.DecodeAddress(addr_resp.Encoded, &address.RegressionNetTap)
+	// if err != nil {
+	// 	log.Fatalf("cannot decode address %v", err)
+	// }
 
-	return addr_resp, ArkAssetKeys{userScriptKey, userInternalKey, serverScriptKey, serverInternalKey, arkScript, arkAssetScript, transferAddress}
+	return ArkSpendingDetails{userScriptKey, userInternalKey, serverScriptKey, serverInternalKey, arkBtcScript, arkAssetScript}
 
 }
 
-func CreateBoardingArkScript(user, server *btcec.PublicKey) (ArkScript, error) {
+func CreateBoardingSpendingDetails(user, server *TapClient) ArkSpendingDetails {
+	userScriptKey, userInternalKey := user.GetNextKeys()
+	serverScriptKey, serverInternalKey := server.GetNextKeys()
+
+	arkBtcScript, err := CreateBoardingArkBtcScript(userInternalKey.PubKey, serverInternalKey.PubKey)
+	if err != nil {
+		log.Fatal(err)
+	}
+	arkAssetScript := CreateBoardingArkAssetScript(userScriptKey.RawKey.PubKey, serverScriptKey.RawKey.PubKey)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return ArkSpendingDetails{userScriptKey, userInternalKey, serverScriptKey, serverInternalKey, arkBtcScript, arkAssetScript}
+
+}
+
+func CreateBtcKeys(amount uint64, user, server *TapClient) ArkBtcKeys {
+	_, userInternalKey := user.GetNextKeys()
+	_, serverInternalKey := server.GetNextKeys()
+
+	arkScript, err := CreateBoardingArkBtcScript(userInternalKey.PubKey, serverInternalKey.PubKey)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	return ArkBtcKeys{arkScript, userInternalKey, serverInternalKey}
+
+}
+
+func CreateBoardingArkBtcScript(user, server *btcec.PublicKey) (ArkBtcScript, error) {
 	leftLeafScript, err := txscript.NewScriptBuilder().
 		AddData(schnorr.SerializePubKey(user)).
 		AddOp(txscript.OP_CHECKSIG).
@@ -119,7 +160,7 @@ func CreateBoardingArkScript(user, server *btcec.PublicKey) (ArkScript, error) {
 		Script()
 
 	if err != nil {
-		return ArkScript{}, fmt.Errorf("failed to decode left script: %w", err)
+		return ArkBtcScript{}, fmt.Errorf("failed to decode left script: %w", err)
 	}
 
 	leftLeaf := txscript.NewTapLeaf(txscript.BaseLeafVersion, leftLeafScript)
@@ -132,14 +173,14 @@ func CreateBoardingArkScript(user, server *btcec.PublicKey) (ArkScript, error) {
 		Script()
 
 	if err != nil {
-		return ArkScript{}, fmt.Errorf("failed to decode left script: %w", err)
+		return ArkBtcScript{}, fmt.Errorf("failed to decode left script: %w", err)
 	}
 
 	rightLeaf := txscript.NewTapLeaf(txscript.BaseLeafVersion, rightLeafScript)
 
 	branch := txscript.NewTapBranch(leftLeaf, rightLeaf)
 
-	return ArkScript{cooperativeSpend: leftLeaf, unilateralSpend: rightLeaf, Branch: branch}, nil
+	return ArkBtcScript{cooperativeSpend: leftLeaf, unilateralSpend: rightLeaf, Branch: branch}, nil
 }
 
 func CreateBoardingArkAssetScript(
@@ -165,7 +206,6 @@ func CreateBoardingArkAssetScript(
 		log.Fatal(err)
 	}
 
-	leaves := make([]txscript.TapLeaf, 2)
 	muSigTapscript, err := txscript.NewScriptBuilder().
 		AddData(schnorr.SerializePubKey(musigUserServer.FinalKey)).
 		AddOp(txscript.OP_CHECKSIG).
@@ -175,12 +215,12 @@ func CreateBoardingArkAssetScript(
 		log.Fatalf("Cannot create Musig Tapscript %v", err)
 	}
 
-	leaves[0] = txscript.TapLeaf{
+	cooperativeSpend := txscript.TapLeaf{
 		LeafVersion: txscript.BaseLeafVersion,
 		Script:      muSigTapscript,
 	}
 
-	unilateralExit, err := txscript.NewScriptBuilder().
+	sweep, err := txscript.NewScriptBuilder().
 		AddInt64(int64(LOCK_BLOCK_HEIGHT)).
 		AddOp(txscript.OP_CHECKLOCKTIMEVERIFY).
 		AddData(schnorr.SerializePubKey(user)).
@@ -191,12 +231,12 @@ func CreateBoardingArkAssetScript(
 		log.Fatalf("Cannot create Unilateral Exit Script %v", err)
 	}
 
-	leaves[1] = txscript.TapLeaf{
+	unilateralExit := txscript.TapLeaf{
 		LeafVersion: txscript.BaseLeafVersion,
-		Script:      unilateralExit,
+		Script:      sweep,
 	}
 
-	tree := txscript.AssembleTaprootScriptTree(leaves...)
+	tree := txscript.AssembleTaprootScriptTree(cooperativeSpend, unilateralExit)
 	internalKey := asset.NUMSPubKey
 	controlBlock := &txscript.ControlBlock{
 		LeafVersion: txscript.BaseLeafVersion,
@@ -223,10 +263,10 @@ func CreateBoardingArkAssetScript(
 		controlBlock.OutputKeyYIsOdd = true
 	}
 
-	return ArkAssetScript{userNonces, serverNonces, tapScriptKey, leaves, tree, controlBlock}
+	return ArkAssetScript{userNonces, serverNonces, tapScriptKey, cooperativeSpend, unilateralExit, tree, controlBlock}
 }
 
-func CreateRoundArkScript(user, server *btcec.PublicKey) (ArkScript, error) {
+func CreateRoundArkBtcScript(user, server *btcec.PublicKey) (ArkBtcScript, error) {
 	leftLeafScript, err := txscript.NewScriptBuilder().
 		AddData(schnorr.SerializePubKey(user)).
 		AddOp(txscript.OP_CHECKSIG).
@@ -237,7 +277,7 @@ func CreateRoundArkScript(user, server *btcec.PublicKey) (ArkScript, error) {
 		Script()
 
 	if err != nil {
-		return ArkScript{}, fmt.Errorf("failed to decode left script: %w", err)
+		return ArkBtcScript{}, fmt.Errorf("failed to decode left script: %w", err)
 	}
 
 	leftLeaf := txscript.NewTapLeaf(txscript.BaseLeafVersion, leftLeafScript)
@@ -250,14 +290,14 @@ func CreateRoundArkScript(user, server *btcec.PublicKey) (ArkScript, error) {
 		Script()
 
 	if err != nil {
-		return ArkScript{}, fmt.Errorf("failed to decode left script: %w", err)
+		return ArkBtcScript{}, fmt.Errorf("failed to decode left script: %w", err)
 	}
 
 	rightLeaf := txscript.NewTapLeaf(txscript.BaseLeafVersion, rightLeafScript)
 
 	branch := txscript.NewTapBranch(leftLeaf, rightLeaf)
 
-	return ArkScript{cooperativeSpend: leftLeaf, unilateralSpend: rightLeaf, Branch: branch}, nil
+	return ArkBtcScript{cooperativeSpend: leftLeaf, unilateralSpend: rightLeaf, Branch: branch}, nil
 }
 
 func CreateRoundArkAssetScript(
@@ -283,7 +323,6 @@ func CreateRoundArkAssetScript(
 		log.Fatal(err)
 	}
 
-	leaves := make([]txscript.TapLeaf, 2)
 	muSigTapscript, err := txscript.NewScriptBuilder().
 		AddData(schnorr.SerializePubKey(musigUserServer.FinalKey)).
 		AddOp(txscript.OP_CHECKSIG).
@@ -293,7 +332,7 @@ func CreateRoundArkAssetScript(
 		log.Fatalf("Cannot create Musig Tapscript %v", err)
 	}
 
-	leaves[0] = txscript.TapLeaf{
+	cooperativeSpend := txscript.TapLeaf{
 		LeafVersion: txscript.BaseLeafVersion,
 		Script:      muSigTapscript,
 	}
@@ -309,12 +348,12 @@ func CreateRoundArkAssetScript(
 		log.Fatalf("Cannot create sweep Tapscript %v", err)
 	}
 
-	leaves[1] = txscript.TapLeaf{
+	unilateralExit := txscript.TapLeaf{
 		LeafVersion: txscript.BaseLeafVersion,
 		Script:      sweep,
 	}
 
-	tree := txscript.AssembleTaprootScriptTree(leaves...)
+	tree := txscript.AssembleTaprootScriptTree(cooperativeSpend, unilateralExit)
 	internalKey := asset.NUMSPubKey
 	controlBlock := &txscript.ControlBlock{
 		LeafVersion: txscript.BaseLeafVersion,
@@ -341,21 +380,21 @@ func CreateRoundArkAssetScript(
 		controlBlock.OutputKeyYIsOdd = true
 	}
 
-	return ArkAssetScript{userNonces, serverNonces, tapScriptKey, leaves, tree, controlBlock}
+	return ArkAssetScript{userNonces, serverNonces, tapScriptKey, cooperativeSpend, unilateralExit, tree, controlBlock}
 }
 
-func CreateAndInsertAssetWitness(arkTransferDetails ArkTransfer, fundedPkt *tappsbt.VPacket, user, server *TapClient) {
+func CreateAndInsertAssetWitness(arkSpendingDetails ArkSpendingDetails, fundedPkt *tappsbt.VPacket, user, server *TapClient) {
 	_, serverSessionId := server.partialSignAssetTransfer(fundedPkt,
-		&arkTransferDetails.ArkAssetKeys.arkAssetScript.leaves[0], arkTransferDetails.ArkAssetKeys.serverScriptKey.RawKey, arkTransferDetails.ArkAssetKeys.arkAssetScript.serverNonce, arkTransferDetails.ArkAssetKeys.userScriptKey.RawKey.PubKey, arkTransferDetails.ArkAssetKeys.arkAssetScript.userNonce.PubNonce)
-
-	userPartialSig, _ := user.partialSignAssetTransfer(fundedPkt,
-		&arkTransferDetails.ArkAssetKeys.arkAssetScript.leaves[0], arkTransferDetails.ArkAssetKeys.userScriptKey.RawKey, arkTransferDetails.ArkAssetKeys.arkAssetScript.userNonce, arkTransferDetails.ArkAssetKeys.serverScriptKey.RawKey.PubKey, arkTransferDetails.ArkAssetKeys.arkAssetScript.serverNonce.PubNonce)
-
-	log.Println("created asset partial sig for user")
+		&arkSpendingDetails.arkAssetScript.cooperativeSpend, arkSpendingDetails.serverScriptKey.RawKey, arkSpendingDetails.arkAssetScript.serverNonce, arkSpendingDetails.userScriptKey.RawKey.PubKey, arkSpendingDetails.arkAssetScript.userNonce.PubNonce)
 
 	log.Println("created asset partial for server")
 
-	transferAssetWitness := server.combineSigs(serverSessionId, userPartialSig, arkTransferDetails.ArkAssetKeys.arkAssetScript.leaves[0], arkTransferDetails.ArkAssetKeys.arkAssetScript.tree, arkTransferDetails.ArkAssetKeys.arkAssetScript.controlBlock)
+	userPartialSig, _ := user.partialSignAssetTransfer(fundedPkt,
+		&arkSpendingDetails.arkAssetScript.cooperativeSpend, arkSpendingDetails.userScriptKey.RawKey, arkSpendingDetails.arkAssetScript.userNonce, arkSpendingDetails.serverScriptKey.RawKey.PubKey, arkSpendingDetails.arkAssetScript.serverNonce.PubNonce)
+
+	log.Println("created asset partial sig for user")
+
+	transferAssetWitness := server.combineSigs(serverSessionId, userPartialSig, arkSpendingDetails.arkAssetScript.cooperativeSpend, arkSpendingDetails.arkAssetScript.tree, arkSpendingDetails.arkAssetScript.controlBlock)
 
 	// update transferAsset Witnesss [Nothing Needs To Change]
 	for idx := range fundedPkt.Outputs {
@@ -368,31 +407,71 @@ func CreateAndInsertAssetWitness(arkTransferDetails ArkTransfer, fundedPkt *tapp
 		firstPrevWitness.TxWitness = transferAssetWitness
 	}
 
+	// TODO: Might not be needed, Please Verify
 	changeOutput := fundedPkt.Outputs[CHANGE_OUTPUT_INDEX]
 	changeOutput.AnchorOutputInternalKey = asset.NUMSPubKey
 }
 
-func CreateBtcWitness(arkTransferDetails ArkTransfer, btcPacket *psbt.Packet, user, server *TapClient) wire.TxWitness {
-	btcControlBlockBytes, err := arkTransferDetails.btcControlBlock.ToBytes()
-	if err != nil {
-		log.Fatal(err)
-	}
-	assetInputIdx := uint32(TRANSFER_INPUT_INDEX)
-	serverBtcPartialSig := server.partialSignBtcTransfer(
-		btcPacket, assetInputIdx,
-		arkTransferDetails.ArkAssetKeys.serverInternalKey, btcControlBlockBytes, arkTransferDetails.ArkAssetKeys.arkScript.cooperativeSpend,
-	)
-	userBtcPartialSig := user.partialSignBtcTransfer(
-		btcPacket, assetInputIdx,
-		arkTransferDetails.ArkAssetKeys.userInternalKey, btcControlBlockBytes, arkTransferDetails.ArkAssetKeys.arkScript.cooperativeSpend,
-	)
+// Sign for two input if available (asset and btc) [ user and server sign ]
+func CreateBtcWitness(arkSpendingDetails []ArkSpendingDetails, btcPacket *psbt.Packet, inputLength int, user, server *TapClient) []wire.TxWitness {
+	serverbtcControlBytesList := make([][]byte, inputLength)
+	serverkeys := make([]keychain.KeyDescriptor, inputLength)
+	serverTapLeaves := make([]txscript.TapLeaf, inputLength)
 
-	txWitness := wire.TxWitness{
-		serverBtcPartialSig,
-		userBtcPartialSig,
-		arkTransferDetails.ArkAssetKeys.arkScript.cooperativeSpend.Script,
-		btcControlBlockBytes,
+	for i := 0; i < inputLength; i++ {
+		arkBtcScript := arkSpendingDetails[i].arkBtcScript
+		controlBlockBytes, err := arkBtcScript.controlBlock.ToBytes()
+		if err != nil {
+			log.Fatal(err)
+		}
+		serverbtcControlBytesList[i] = controlBlockBytes
+		serverkeys[i] = arkSpendingDetails[i].serverInternalKey
+		serverTapLeaves[i] = arkSpendingDetails[i].arkBtcScript.cooperativeSpend
+
 	}
 
-	return txWitness
+	serverBtcPartialSigs := server.partialSignBtcTransfer(
+		btcPacket, inputLength,
+		serverkeys, serverbtcControlBytesList, serverTapLeaves,
+	)
+
+	log.Println("created btc partial sig for server")
+
+	userbtcControlBytesList := make([][]byte, inputLength)
+	userkeys := make([]keychain.KeyDescriptor, inputLength)
+	userTapLeaves := make([]txscript.TapLeaf, inputLength)
+
+	for i := 0; i < inputLength; i++ {
+		arkBtcScript := arkSpendingDetails[i].arkBtcScript
+		controlBlockBytes, err := arkBtcScript.controlBlock.ToBytes()
+		if err != nil {
+			log.Fatal(err)
+		}
+		userbtcControlBytesList[i] = controlBlockBytes
+		userkeys[i] = arkSpendingDetails[i].userInternalKey
+		userTapLeaves[i] = arkSpendingDetails[i].arkBtcScript.cooperativeSpend
+
+	}
+
+	userBtcPartialSigs := user.partialSignBtcTransfer(
+		btcPacket, inputLength,
+		userkeys, userbtcControlBytesList, userTapLeaves,
+	)
+
+	log.Println("created btc partial sig for user")
+
+	txwitnessList := make([]wire.TxWitness, inputLength)
+
+	for i := 0; i < inputLength; i++ {
+		txWitness := wire.TxWitness{
+			serverBtcPartialSigs[i],
+			userBtcPartialSigs[i],
+			arkSpendingDetails[i].arkBtcScript.cooperativeSpend.Script,
+			serverbtcControlBytesList[i],
+		}
+
+		txwitnessList[i] = txWitness
+	}
+
+	return txwitnessList
 }

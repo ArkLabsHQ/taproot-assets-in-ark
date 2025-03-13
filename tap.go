@@ -77,7 +77,7 @@ func InitTapClient(hostPort, tapdport, tlsData, macaroonData string, lndClient L
 
 }
 
-func (cl *TapClient) GetBoardingAddress(scriptBranch txscript.TapBranch, assetScriptKey asset.ScriptKey, assetId []byte, amnt uint64) (*taprpc.Addr, error) {
+func (cl *TapClient) GetNewAddress(scriptBranch txscript.TapBranch, assetScriptKey asset.ScriptKey, assetId []byte, amnt uint64) (*taprpc.Addr, error) {
 
 	btcInternalKey := asset.NUMSPubKey
 
@@ -109,6 +109,19 @@ func (cl *TapClient) SendAsset(addr *taprpc.Addr) (*taprpc.SendAssetResponse, er
 			TapAddrs: []string{addr.Encoded},
 		},
 	)
+}
+
+func (cl *TapClient) ExportProof(assetId []byte, scriptKey []byte) *taprpc.ProofFile {
+	fullProof, err := cl.client.ExportProof(context.TODO(), &taprpc.ExportProofRequest{
+		AssetId:   assetId,
+		ScriptKey: scriptKey,
+	})
+
+	if err != nil {
+		log.Fatalf("cannot export proof %v", err)
+	}
+
+	return fullProof
 }
 
 func (cl *TapClient) GetNextKeys() (asset.ScriptKey,
@@ -247,124 +260,128 @@ func (cl *TapClient) combineSigs(sessID,
 
 // Note: Commits Outputs pkscripts
 func (cl *TapClient) CommitVirtualPsbts(
-	packet *psbt.Packet, activePackets []*tappsbt.VPacket,
-	passivePackets []*tappsbt.VPacket,
-	changeOutputIndex int32) (*psbt.Packet, []*tappsbt.VPacket,
-	[]*tappsbt.VPacket, *assetwalletrpc.CommitVirtualPsbtsResponse) {
+	fundedPacket *psbt.Packet, activePackets []*tappsbt.VPacket) {
 
-	var buf bytes.Buffer
-	err := packet.Serialize(&buf)
-	if err != nil {
-		log.Fatal(err)
-	}
+	outputCommitments := make(tappsbt.OutputCommitments)
 
-	request := &assetwalletrpc.CommitVirtualPsbtsRequest{
-		AnchorPsbt: buf.Bytes(),
-		Fees: &assetwalletrpc.CommitVirtualPsbtsRequest_SatPerVbyte{
-			// TODO: Verify this
-			SatPerVbyte: uint64(2000 / 1000),
-		},
-	}
-
-	type existingIndex = assetwalletrpc.CommitVirtualPsbtsRequest_ExistingOutputIndex
-	if changeOutputIndex < 0 {
-		request.AnchorChangeOutput = &assetwalletrpc.CommitVirtualPsbtsRequest_Add{
-			Add: true,
-		}
-	} else {
-		request.AnchorChangeOutput = &existingIndex{
-			ExistingOutputIndex: changeOutputIndex,
+	// And now we commit each packet to the respective anchor output
+	// commitments.
+	for _, vPkt := range activePackets {
+		err := cl.commitPacket(vPkt, outputCommitments)
+		if err != nil {
+			log.Fatal(err)
 		}
 	}
 
-	request.VirtualPsbts = make([][]byte, len(activePackets))
+	// Create and Update Taproot Output Keys
+	for _, vPkt := range activePackets {
+		err := tapsend.UpdateTaprootOutputKeys(
+			fundedPacket, vPkt, outputCommitments,
+		)
+		if err != nil {
+			log.Fatalf("error updating taproot output "+
+				"keys: %v", err)
+		}
+	}
+
+	// We're done creating the output commitments, we can now create the
+	// transition proof suffixes.
 	for idx := range activePackets {
-		request.VirtualPsbts[idx], err = tappsbt.Encode(
-			activePackets[idx],
-		)
-		if err != nil {
-			log.Fatal(err)
+		vPkt := activePackets[idx]
+
+		for vOutIdx := range vPkt.Outputs {
+			proofSuffix, err := tapsend.CreateProofSuffix(
+				fundedPacket.UnsignedTx, fundedPacket.Outputs,
+				vPkt, outputCommitments, vOutIdx, activePackets,
+			)
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			vPkt.Outputs[vOutIdx].ProofSuffix = proofSuffix
 		}
-
-	}
-	request.PassiveAssetPsbts = make([][]byte, len(passivePackets))
-	for idx := range passivePackets {
-		request.PassiveAssetPsbts[idx], err = tappsbt.Encode(
-			passivePackets[idx],
-		)
-		if err != nil {
-			log.Fatal(err)
-		}
-
 	}
 
-	// Now we can map the virtual packets to the PSBT.
-	commitResponse, err := cl.wallet.CommitVirtualPsbts(context.TODO(), request)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	fundedPacket, err := psbt.NewFromRawBytes(
-		bytes.NewReader(commitResponse.AnchorPsbt), false,
-	)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	activePackets = make(
-		[]*tappsbt.VPacket, len(commitResponse.VirtualPsbts),
-	)
-	for idx := range commitResponse.VirtualPsbts {
-		activePackets[idx], err = tappsbt.Decode(
-			commitResponse.VirtualPsbts[idx],
-		)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-	}
-
-	passivePackets = make(
-		[]*tappsbt.VPacket, len(commitResponse.PassiveAssetPsbts),
-	)
-	for idx := range commitResponse.PassiveAssetPsbts {
-		passivePackets[idx], err = tappsbt.Decode(
-			commitResponse.PassiveAssetPsbts[idx],
-		)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-	}
-
-	return fundedPacket, activePackets, passivePackets, commitResponse
 }
 
-func (cl *TapClient) FinalizePacket(
-	pkt *psbt.Packet) *psbt.Packet {
+// commitPacket creates the output commitments for a virtual packet and merges
+// it with the existing commitments for the anchor outputs.
+func (cl *TapClient) commitPacket(vPkt *tappsbt.VPacket,
+	outputCommitments tappsbt.OutputCommitments) error {
 
-	var buf bytes.Buffer
-	err := pkt.Serialize(&buf)
-	if err != nil {
-		log.Fatal(err)
+	inputs := vPkt.Inputs
+	outputs := vPkt.Outputs
+
+	// One virtual packet is only allowed to contain inputs and outputs of
+	// the same asset ID. Fungible assets must be sent in separate packets.
+	firstInputID := inputs[0].Asset().ID()
+	for idx := range inputs {
+		if inputs[idx].Asset().ID() != firstInputID {
+			return fmt.Errorf("inputs must have the same asset ID")
+		}
 	}
 
-	finalizeResp, err := cl.lndClient.wallet.FinalizePsbt(context.TODO(), &walletrpc.FinalizePsbtRequest{
-		FundedPsbt: buf.Bytes(),
-	})
-
+	// Set the output commitment version based on the vPkt version.
+	outputCommitmentVersion, err := tappsbt.CommitmentVersion(vPkt.Version)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
-	signedPacket, err := psbt.NewFromRawBytes(
-		bytes.NewReader(finalizeResp.SignedPsbt), false,
-	)
-	if err != nil {
-		log.Fatal(err)
+	for idx := range outputs {
+		vOut := outputs[idx]
+		anchorOutputIdx := vOut.AnchorOutputIndex
+
+		if vOut.Asset == nil {
+			return fmt.Errorf("output %d is missing asset", idx)
+		}
+
+		sendTapCommitment, err := commitment.FromAssets(
+			outputCommitmentVersion, vOut.Asset,
+		)
+		if err != nil {
+			return fmt.Errorf("error committing assets: %w", err)
+		}
+
+		// Because the receiver of this output might be receiving
+		// through an address (non-interactive), we need to blank out
+		// the split commitment proof, as the receiver doesn't know of
+		// this information yet. The final commitment will be to a leaf
+		// without the split commitment proof, that proof will be
+		// delivered in the proof file as part of the non-interactive
+		// send. We do the same even for interactive sends to not need
+		// to distinguish between the two cases in the proof file
+		// itself.
+		sendTapCommitment, err = commitment.TrimSplitWitnesses(
+			outputCommitmentVersion, sendTapCommitment,
+		)
+		if err != nil {
+			return fmt.Errorf("error trimming split witnesses: %w",
+				err)
+		}
+
+		// If the vOutput contains any AltLeaves, merge them into the
+		// tap commitment.
+		err = sendTapCommitment.MergeAltLeaves(vOut.AltLeaves)
+		if err != nil {
+			return fmt.Errorf("error merging alt leaves: %w", err)
+		}
+
+		// Merge the finished TAP level commitment with the existing
+		// one (if any) for the anchor output.
+		anchorOutputCommitment, ok := outputCommitments[anchorOutputIdx]
+		if ok {
+			err = sendTapCommitment.Merge(anchorOutputCommitment)
+			if err != nil {
+				return fmt.Errorf("unable to merge output "+
+					"commitment: %w", err)
+			}
+		}
+
+		outputCommitments[anchorOutputIdx] = sendTapCommitment
+
 	}
 
-	return signedPacket
+	return nil
 }
 
 func (cl *TapClient) LogAndPublish(
@@ -413,38 +430,52 @@ func (cl *TapClient) LogAndPublish(
 	return resp
 }
 
-func (cl *TapClient) partialSignBtcTransfer(pkt *psbt.Packet, inputIndex uint32,
-	key keychain.KeyDescriptor, controlBlockBytes []byte,
-	tapLeaf txscript.TapLeaf) []byte {
-
-	leafToSign := []*psbt.TaprootTapLeafScript{{
-		ControlBlock: controlBlockBytes,
-		Script:       tapLeaf.Script,
-		LeafVersion:  tapLeaf.LeafVersion,
-	}}
+func (cl *TapClient) partialSignBtcTransfer(pkt *psbt.Packet, length int,
+	keys []keychain.KeyDescriptor, controlBlockBytesList [][]byte,
+	tapLeaves []txscript.TapLeaf) [][]byte {
 
 	// The lnd SignPsbt RPC doesn't really understand multi-sig yet, we
 	// cannot specify multiple keys that need to sign. So what we do here
 	// is just replace the derivation path info for the input we want to
 	// sign to the key we want to sign with. If we do this for every signing
 	// participant, we'll get the correct signatures for OP_CHECKSIGADD.
-	signInput := &pkt.Inputs[inputIndex]
-	derivation, trDerivation := tappsbt.Bip32DerivationFromKeyDesc(
-		key, chaincfg.RegressionNetParams.HDCoinType,
-	)
-	trDerivation.LeafHashes = [][]byte{fn.ByteSlice(tapLeaf.TapHash())}
-	signInput.Bip32Derivation = []*psbt.Bip32Derivation{derivation}
-	signInput.TaprootBip32Derivation = []*psbt.TaprootBip32Derivation{
-		trDerivation,
-	}
-	signInput.TaprootLeafScript = leafToSign
-	signInput.SighashType = txscript.SigHashDefault
 
-	var buf bytes.Buffer
-	err := pkt.Serialize(&buf)
+	for i := 0; i < length; i++ {
+		leafToSign := []*psbt.TaprootTapLeafScript{{
+			ControlBlock: controlBlockBytesList[i],
+			Script:       tapLeaves[i].Script,
+			LeafVersion:  tapLeaves[i].LeafVersion,
+		}}
+		signInput := &pkt.Inputs[i]
+		derivation, trDerivation := tappsbt.Bip32DerivationFromKeyDesc(
+			keys[i], chaincfg.RegressionNetParams.HDCoinType,
+		)
+		trDerivation.LeafHashes = [][]byte{fn.ByteSlice(tapLeaves[i].TapHash())}
+		signInput.Bip32Derivation = []*psbt.Bip32Derivation{derivation}
+		signInput.TaprootBip32Derivation = []*psbt.TaprootBip32Derivation{
+			trDerivation,
+		}
+		signInput.TaprootLeafScript = leafToSign
+		signInput.SighashType = txscript.SigHashDefault
+	}
+
+	err := pkt.SanityCheck()
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	var buf bytes.Buffer
+	err = pkt.Serialize(&buf)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	b64, err := pkt.B64Encode()
+	if err != nil {
+		log.Fatalf("failed to Encode pkt")
+
+	}
+	log.Println(b64)
 
 	resp, err := cl.lndClient.wallet.SignPsbt(
 		context.TODO(), &walletrpc.SignPsbtRequest{
@@ -463,7 +494,12 @@ func (cl *TapClient) partialSignBtcTransfer(pkt *psbt.Packet, inputIndex uint32,
 	// Make sure the input we wanted to sign for was actually signed.
 	// require.Contains(t, resp.SignedInputs, inputIndex)
 
-	return result.Inputs[inputIndex].TaprootScriptSpendSig[0].Signature
+	signatures := make([][]byte, length)
+	for i := 0; i < length; i++ {
+		signatures[i] = result.Inputs[i].TaprootScriptSpendSig[0].Signature
+	}
+
+	return signatures
 }
 
 func (cl *TapClient) partialSignAssetTransfer(assetTransferPacket *tappsbt.VPacket, assetLeaf *txscript.TapLeaf, localScriptKeyDescriptor keychain.KeyDescriptor,
@@ -496,12 +532,12 @@ func (cl *TapClient) partialSignAssetTransfer(assetTransferPacket *tappsbt.VPack
 		assetTransferPacket, partialSigner, partialSigner,
 	)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("error is one %v", err)
 	}
 
 	isSplit, err := assetTransferPacket.HasSplitCommitment()
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("error is two %v", err)
 	}
 
 	// Identify new output asset. For splits, the new asset that received
@@ -510,7 +546,7 @@ func (cl *TapClient) partialSignAssetTransfer(assetTransferPacket *tappsbt.VPack
 	if isSplit {
 		splitOut, err := assetTransferPacket.SplitRootOutput()
 		if err != nil {
-			log.Fatal(err)
+			log.Fatalf("error is three %v", err)
 		}
 
 		newAsset = splitOut.Asset
@@ -656,9 +692,9 @@ func (m *muSig2PartialSigner) Execute(*asset.Asset, []*commitment.SplitAsset,
 	return nil
 }
 
-// createAndSetInput creates a virtual packet input for the given asset input
+// createAndSetAssetInput creates a virtual packet input for the given asset input
 // and sets it on the given virtual packet.
-func createAndSetInput(vPkt *tappsbt.VPacket, idx int,
+func createAndSetAssetInput(vPkt *tappsbt.VPacket, idx int,
 	roundDetails *taprpc.TransferOutput, assetId []byte) error {
 
 	// At this point, we have a valid "coin" to spend in the commitment, so

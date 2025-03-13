@@ -19,7 +19,7 @@ type BitcoinClient struct {
 func GetBitcoinClient() BitcoinClient {
 	// Set up the connection configuration for your btcd RPC server.
 	connCfg := &rpcclient.ConnConfig{
-		Host:         "localhost:18444", // btcd's RPC host:port
+		Host:         "localhost:18443", // btcd's RPC host:port
 		User:         "polaruser",       // RPC username
 		Pass:         "polarpass",       // RPC password
 		HTTPPostMode: true,              // btcd only supports HTTP POST mode
@@ -33,6 +33,18 @@ func GetBitcoinClient() BitcoinClient {
 	}
 	return BitcoinClient{client}
 
+}
+
+func (b BitcoinClient) MineBlock() {
+	address1, err := b.client.GetNewAddress("")
+	if err != nil {
+		log.Fatalf("cannot generate address %v", err)
+	}
+	maxretries := int64(3)
+	_, err = b.client.GenerateToAddress(1, address1, &maxretries)
+	if err != nil {
+		log.Fatalf("cannot generate to address %v", err)
+	}
 }
 
 func (b BitcoinClient) SendTransaction(transaction *wire.MsgTx) BitcoinSendTxResult {

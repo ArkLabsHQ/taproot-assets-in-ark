@@ -5,186 +5,166 @@ import (
 	"context"
 	"log"
 
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
+	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/lightninglabs/taproot-assets/address"
+	"github.com/lightninglabs/taproot-assets/asset"
 	"github.com/lightninglabs/taproot-assets/tappsbt"
 	"github.com/lightninglabs/taproot-assets/taprpc"
 	"github.com/lightninglabs/taproot-assets/tapsend"
+	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
 )
 
-func spendBoardingTransfer(assetId []byte, boardingTransfer ArkBoardingTransfer, transferAddress *address.Tap, server *TapClient) ChainTransfer {
-	addresses := []*address.Tap{transferAddress}
-	// Note: This create a VPacket
-	fundedPkt, err := tappsbt.FromAddresses(addresses, LEFT_TRANSFER_OUTPUT_INDEX)
-	if err != nil {
-		log.Fatalf("cannot generate packet from address %v", err)
-	}
-
-	// Note: This add input details
-	createAndSetInput(fundedPkt, TRANSFER_INPUT_INDEX, boardingTransfer.previousOutput, assetId)
-
-	// Note: This add output details
-	tapsend.PrepareOutputAssets(context.TODO(), fundedPkt)
-
-	CreateAndInsertAssetWitness(boardingTransfer.arkTransferDetails, fundedPkt, boardingTransfer.user, server)
-
-	vPackets := []*tappsbt.VPacket{fundedPkt}
-	transferBtcPkt, err := tapsend.PrepareAnchoringTemplate(vPackets)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	btcTransferPkt, finalizedTransferPackets, _, _ := server.CommitVirtualPsbts(
-		transferBtcPkt, vPackets, nil, -1,
-	)
-
-	btcTxWitness := CreateBtcWitness(boardingTransfer.arkTransferDetails, btcTransferPkt, boardingTransfer.user, server)
-	var buf bytes.Buffer
-	err = psbt.WriteTxWitness(&buf, btcTxWitness)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	btcTransferPkt.Inputs[TRANSFER_INPUT_INDEX].FinalScriptWitness = buf.Bytes()
-	signedPkt := server.FinalizePacket(btcTransferPkt)
-
-	unpublishedTransfer := DeriveUnpublishedChainTransfer(signedPkt, finalizedTransferPackets[0].Outputs[BOARDING_TRANSFER_OUTPUT_INDEX])
-	return unpublishedTransfer
-}
-
-func CreateRoundTransfer(boardingTransfer ArkBoardingTransfer, assetId []byte, user, server *TapClient, level uint64) ([]ProofTxMsg, []byte, string) {
+func CreateRoundTransfer(inputAssetProofFile []byte, inputSpendingDetails ArkSpendingDetails, inputTransfer ChainTransfer, assetId []byte, user, server *TapClient, level uint64) ([]ProofTxMsg, []byte) {
 	unpublisedProofList := make([]ProofTxMsg, 0)
 
-	_, rootKeys := CreateAssetKeys(assetId, boardingTransfer.boardingAmount, user, server)
+	btcControlBlock := extractControlBlock(inputSpendingDetails.arkBtcScript, inputTransfer.taprootAssetRoot)
+	inputSpendingDetails.arkBtcScript.controlBlock = btcControlBlock
 
-	unpublishedRootTransfer := spendBoardingTransfer(assetId, boardingTransfer, rootKeys.address, server)
-	btcControlBlock := extractControlBlock(rootKeys.arkScript, unpublishedRootTransfer.taprootAssetRoot)
-	rootTransferDetails := ArkTransfer{btcControlBlock, rootKeys}
-	rootChainTransfer := ArkRoundChainTransfer{arkTransferDetails: rootTransferDetails, unpublishedTransfer: unpublishedRootTransfer}
-
-	createIntermediateChainTransfer(assetId, boardingTransfer.boardingAmount, rootChainTransfer, level-1, user, server, &unpublisedProofList)
-
-	// Broadcast the round Transfer
-	fullproof, err := server.client.ExportProof(context.TODO(), &taprpc.ExportProofRequest{
-		AssetId:   assetId,
-		ScriptKey: boardingTransfer.previousOutput.ScriptKey,
-	})
-	if err != nil {
-		log.Fatalf("cannot export proof %v", err)
-	}
+	createIntermediateChainTransfer(assetId, inputSpendingDetails, inputTransfer, level-1, user, server, &unpublisedProofList)
 
 	bcoinClient := GetBitcoinClient()
-	sendTxResult := bcoinClient.SendTransaction(unpublishedRootTransfer.finalTx)
+	sendTxResult := bcoinClient.SendTransaction(inputTransfer.finalTx)
 
-	updatedProofFile := UpdateAndAppendProof(fullproof.RawProofFile, unpublishedRootTransfer.finalTx, unpublishedRootTransfer.transferProof, sendTxResult)
+	rootProofFile := UpdateAndAppendProof(inputAssetProofFile, inputTransfer.finalTx, inputTransfer.transferProof, sendTxResult)
 
 	log.Println("Round Proof Fetched and Updated")
 
-	return unpublisedProofList, updatedProofFile, fullproof.GenesisPoint
+	return unpublisedProofList, rootProofFile
 
 }
 
-func createIntermediateChainTransfer(assetId []byte, amount uint64, arkChainTransfer ArkRoundChainTransfer, level uint64, user, server *TapClient, unpublishedProofList *[]ProofTxMsg) {
+func createIntermediateChainTransfer(assetId []byte, inputSpendingDetails ArkSpendingDetails, inputChainTransfer ChainTransfer, level uint64, user, server *TapClient, unpublishedProofList *[]ProofTxMsg) {
 	if level == 0 {
-		createFinalChainTransfer(assetId, amount, arkChainTransfer, user, server, unpublishedProofList)
+		createFinalChainTransfer(assetId, inputSpendingDetails, inputChainTransfer, user, server, unpublishedProofList)
 		return
 	}
 
-	_, leftKeys := CreateAssetKeys(assetId, amount/2, user, server)
-	_, rightKeys := CreateAssetKeys(assetId, amount/2, user, server)
+	leftOutputSpendingDetails := CreateRoundSpendingDetails(user, server)
+	rightOutputSpendingDetail := CreateRoundSpendingDetails(user, server)
 
-	addresses := []*address.Tap{leftKeys.address, rightKeys.address}
-	// Note: This create a VPacket
-	fundedPkt, err := tappsbt.FromAddresses(addresses, LEFT_TRANSFER_OUTPUT_INDEX)
-	if err != nil {
-		log.Fatalf("cannot generate packet from address %v", err)
-	}
+	fee := int64(10_000)
+	btcAmount := (inputChainTransfer.anchorValue - fee) / 2 // Fee
+	assetAmount := inputChainTransfer.assetAmount / 2
+
+	fundedPkt := tappsbt.ForInteractiveSend(asset.ID(assetId), assetAmount, leftOutputSpendingDetails.arkAssetScript.tapScriptKey, 0, 0, 0,
+		keychain.KeyDescriptor{
+			PubKey: asset.NUMSPubKey,
+		}, asset.V0, &address.RegressionNetTap)
+
+	fundedPkt.Outputs[0].Type = tappsbt.TypeSplitRoot
+
+	tappsbt.AddOutput(fundedPkt, assetAmount, rightOutputSpendingDetail.arkAssetScript.tapScriptKey, 1,
+		keychain.KeyDescriptor{
+			PubKey: asset.NUMSPubKey,
+		}, asset.V0)
 
 	// Note: This add input details
-	createAndSetInputIntermediate(fundedPkt, TRANSFER_INPUT_INDEX, arkChainTransfer.unpublishedTransfer, assetId)
-
+	createAndSetInputIntermediate(fundedPkt, TRANSFER_INPUT_INDEX, inputChainTransfer, assetId)
 	// Note: This add output details
-	tapsend.PrepareOutputAssets(context.TODO(), fundedPkt)
+	err := tapsend.PrepareOutputAssets(context.TODO(), fundedPkt)
 
-	CreateAndInsertAssetWitness(arkChainTransfer.arkTransferDetails, fundedPkt, user, server)
+	if err != nil {
+		log.Fatalf("cannot prepare Output %v", err)
+	}
 
+	CreateAndInsertAssetWitness(inputSpendingDetails, fundedPkt, user, server)
+
+	// Add Btc Output Amount
 	vPackets := []*tappsbt.VPacket{fundedPkt}
 	transferBtcPkt, err := tapsend.PrepareAnchoringTemplate(vPackets)
 	if err != nil {
 		log.Fatal(err)
 	}
+	transferBtcPkt.UnsignedTx.TxOut[0].Value = int64(btcAmount)
+	transferBtcPkt.UnsignedTx.TxOut[1].Value = int64(btcAmount)
 
-	btcTransferPkt, finalizedTransferPackets, _, _ := server.CommitVirtualPsbts(
-		transferBtcPkt, vPackets, nil, -1,
+	//Adds Fees and commit
+	server.CommitVirtualPsbts(
+		transferBtcPkt, vPackets,
 	)
 
-	btcTxWitness := CreateBtcWitness(arkChainTransfer.arkTransferDetails, btcTransferPkt, user, server)
+	inputLength := 1
+	spendingDetailsLists := make([]ArkSpendingDetails, inputLength)
+	spendingDetailsLists[0] = inputSpendingDetails
+
+	// Sign BTC Input
+	btcTxWitness := CreateBtcWitness(spendingDetailsLists, transferBtcPkt, inputLength, user, server)
+
 	var buf bytes.Buffer
-	err = psbt.WriteTxWitness(&buf, btcTxWitness)
+	err = psbt.WriteTxWitness(&buf, btcTxWitness[0])
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	btcTransferPkt.Inputs[TRANSFER_INPUT_INDEX].FinalScriptWitness = buf.Bytes()
-	signedPkt := server.FinalizePacket(btcTransferPkt)
+	transferBtcPkt.Inputs[TRANSFER_INPUT_INDEX].FinalScriptWitness = buf.Bytes()
+	// Finalise PSBT
+	err = psbt.MaybeFinalizeAll(transferBtcPkt)
+
+	if err != nil {
+		log.Fatalf("failed to finaliste Psbt %v", err)
+	}
 
 	// derive Left and Right Unpublished Transfers
-	leftUnpublishedTransfer := DeriveUnpublishedChainTransfer(signedPkt, finalizedTransferPackets[0].Outputs[LEFT_TRANSFER_OUTPUT_INDEX])
-	rightUnpublishedTransfer := DeriveUnpublishedChainTransfer(signedPkt, finalizedTransferPackets[0].Outputs[RIGHT_TRANSFER_OUTPUT_INDEX])
+	leftUnpublishedTransfer := DeriveUnpublishedChainTransfer(transferBtcPkt, vPackets[0].Outputs[0])
+	rightUnpublishedTransfer := DeriveUnpublishedChainTransfer(transferBtcPkt, vPackets[0].Outputs[1])
 
 	// derive Left and Right Control Blocks
-	leftBtcControlBlock := extractControlBlock(leftKeys.arkScript, leftUnpublishedTransfer.taprootAssetRoot)
-	rightBtcControlBlock := extractControlBlock(rightKeys.arkScript, rightUnpublishedTransfer.taprootAssetRoot)
+	leftBtcControlBlock := extractControlBlock(leftOutputSpendingDetails.arkBtcScript, leftUnpublishedTransfer.taprootAssetRoot)
+	rightBtcControlBlock := extractControlBlock(rightOutputSpendingDetail.arkBtcScript, rightUnpublishedTransfer.taprootAssetRoot)
 
 	// derive and  Left and Right Proofs Details to the ProofList
-	leftProofTxMsg := ProofTxMsg{TxMsg: leftUnpublishedTransfer.finalTx, Proof: leftUnpublishedTransfer.transferProof}
-	rightProofTxMsg := ProofTxMsg{TxMsg: rightUnpublishedTransfer.finalTx, Proof: rightUnpublishedTransfer.transferProof}
-	*unpublishedProofList = append(*unpublishedProofList, leftProofTxMsg, rightProofTxMsg)
+	leftOutputProofTxMsg := ProofTxMsg{TxMsg: leftUnpublishedTransfer.finalTx, Proof: leftUnpublishedTransfer.transferProof}
+	rightOutputProofTxMsg := ProofTxMsg{TxMsg: rightUnpublishedTransfer.finalTx, Proof: rightUnpublishedTransfer.transferProof}
+	*unpublishedProofList = append(*unpublishedProofList, leftOutputProofTxMsg, rightOutputProofTxMsg)
 
-	leftTransferDetails := ArkTransfer{leftBtcControlBlock, leftKeys}
-	leftIntermediateChainTransfer := ArkRoundChainTransfer{arkTransferDetails: leftTransferDetails, unpublishedTransfer: leftUnpublishedTransfer}
-
-	rightTransferDetails := ArkTransfer{rightBtcControlBlock, rightKeys}
-	rightIntermediateChainTransfer := ArkRoundChainTransfer{arkTransferDetails: rightTransferDetails, unpublishedTransfer: rightUnpublishedTransfer}
+	leftOutputSpendingDetails.arkBtcScript.controlBlock = leftBtcControlBlock
+	rightOutputSpendingDetail.arkBtcScript.controlBlock = rightBtcControlBlock
 
 	log.Println("Intermediate Asset Transferred")
-
 	// Recursively create the next level of transfers
-	createIntermediateChainTransfer(assetId, amount/2, leftIntermediateChainTransfer, level-1, user, server, unpublishedProofList)
-	createIntermediateChainTransfer(assetId, amount/2, rightIntermediateChainTransfer, level-1, user, server, unpublishedProofList)
+	createIntermediateChainTransfer(assetId, leftOutputSpendingDetails, leftUnpublishedTransfer, level-1, user, server, unpublishedProofList)
+	createIntermediateChainTransfer(assetId, rightOutputSpendingDetail, rightUnpublishedTransfer, level-1, user, server, unpublishedProofList)
 
 }
 
-func createFinalChainTransfer(assetId []byte, amount uint64, arkChainTransfer ArkRoundChainTransfer, user, server *TapClient, unpublishedProofList *[]ProofTxMsg) {
-	left_addr_resp, err := user.client.NewAddr(context.TODO(), &taprpc.NewAddrRequest{
+func createFinalChainTransfer(assetId []byte, inputSpendingDetails ArkSpendingDetails, inputChainTransfer ChainTransfer, user, server *TapClient, unpublishedProofList *[]ProofTxMsg) {
+	assetAmountInBtc := 1_000
+	changeAssetInBtc := 1_000
+	fee := 10_000
+	btcAmount := inputChainTransfer.anchorValue - int64(assetAmountInBtc) - int64(changeAssetInBtc) - int64(fee)
+
+	asset_addr_resp, err := user.client.NewAddr(context.TODO(), &taprpc.NewAddrRequest{
 		AssetId: assetId,
-		Amt:     amount / 2,
+		Amt:     inputChainTransfer.assetAmount,
 	})
 
 	if err != nil {
-		log.Fatalf("cannot get left address %v", err)
+		log.Fatalf("cannot get asset left address %v", err)
 	}
 
-	right_addr_resp, err := user.client.NewAddr(context.TODO(), &taprpc.NewAddrRequest{
-		AssetId: assetId,
-		Amt:     amount / 2,
-	})
-
-	if err != nil {
-		log.Fatalf("cannot get right address %v", err)
-	}
-
-	left_addr, err := address.DecodeAddress(left_addr_resp.Encoded, &address.RegressionNetTap)
+	asset_addr, err := address.DecodeAddress(asset_addr_resp.Encoded, &address.RegressionNetTap)
 	if err != nil {
 		log.Fatalf("cannot decode address %v", err)
 	}
 
-	right_addr, err := address.DecodeAddress(right_addr_resp.Encoded, &address.RegressionNetTap)
+	btc_addr_resp, err := user.lndClient.wallet.NextAddr(context.TODO(), &walletrpc.AddrRequest{
+		Type:   walletrpc.AddressType_TAPROOT_PUBKEY,
+		Change: false,
+	})
+
+	if err != nil {
+		log.Fatalf("cannot get btc right address %v", err)
+	}
+
+	btc_addr, err := btcutil.DecodeAddress(btc_addr_resp.Addr, &chaincfg.RegressionNetParams)
 	if err != nil {
 		log.Fatalf("cannot decode address %v", err)
 	}
 
-	addresses := []*address.Tap{left_addr, right_addr}
+	addresses := []*address.Tap{asset_addr}
 	// Note: This create a VPacket
 	fundedPkt, err := tappsbt.FromAddresses(addresses, LEFT_TRANSFER_OUTPUT_INDEX)
 	if err != nil {
@@ -192,40 +172,48 @@ func createFinalChainTransfer(assetId []byte, amount uint64, arkChainTransfer Ar
 	}
 
 	// Note: This add input details
-	createAndSetInputIntermediate(fundedPkt, TRANSFER_INPUT_INDEX, arkChainTransfer.unpublishedTransfer, assetId)
+	createAndSetInputIntermediate(fundedPkt, TRANSFER_INPUT_INDEX, inputChainTransfer, assetId)
 
 	// Note: This add output details
 	tapsend.PrepareOutputAssets(context.TODO(), fundedPkt)
 
-	CreateAndInsertAssetWitness(arkChainTransfer.arkTransferDetails, fundedPkt, user, server)
+	CreateAndInsertAssetWitness(inputSpendingDetails, fundedPkt, user, server)
 
 	vPackets := []*tappsbt.VPacket{fundedPkt}
 	transferBtcPkt, err := tapsend.PrepareAnchoringTemplate(vPackets)
 	if err != nil {
 		log.Fatal(err)
 	}
+	addBtcOutput(transferBtcPkt, uint64(btcAmount), btc_addr)
 
-	btcTransferPkt, finalizedTransferPackets, _, _ := server.CommitVirtualPsbts(
-		transferBtcPkt, vPackets, nil, -1,
+	server.CommitVirtualPsbts(
+		transferBtcPkt, vPackets,
 	)
 
-	btcTxWitness := CreateBtcWitness(arkChainTransfer.arkTransferDetails, btcTransferPkt, user, server)
+	inputLength := 1
+	spendingDetailsLists := make([]ArkSpendingDetails, inputLength)
+	spendingDetailsLists[0] = inputSpendingDetails
+
+	btcTxWitness := CreateBtcWitness(spendingDetailsLists, transferBtcPkt, inputLength, user, server)
 	var buf bytes.Buffer
-	err = psbt.WriteTxWitness(&buf, btcTxWitness)
+	err = psbt.WriteTxWitness(&buf, btcTxWitness[0])
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	btcTransferPkt.Inputs[TRANSFER_INPUT_INDEX].FinalScriptWitness = buf.Bytes()
-	signedPkt := server.FinalizePacket(btcTransferPkt)
+	transferBtcPkt.Inputs[TRANSFER_INPUT_INDEX].FinalScriptWitness = buf.Bytes()
 
-	leftUnpublishedTransfer := DeriveUnpublishedChainTransfer(signedPkt, finalizedTransferPackets[0].Outputs[LEFT_TRANSFER_OUTPUT_INDEX])
-	rightUnpublishedTransfer := DeriveUnpublishedChainTransfer(signedPkt, finalizedTransferPackets[0].Outputs[RIGHT_TRANSFER_OUTPUT_INDEX])
+	// Finalise PSBT
+	err = psbt.MaybeFinalizeAll(transferBtcPkt)
+	if err != nil {
+		log.Fatalf("failed to finaliste Psbt %v", err)
+	}
 
-	leftProofTxMsg := ProofTxMsg{TxMsg: leftUnpublishedTransfer.finalTx, Proof: leftUnpublishedTransfer.transferProof}
-	rightProofTxMsg := ProofTxMsg{TxMsg: rightUnpublishedTransfer.finalTx, Proof: rightUnpublishedTransfer.transferProof}
+	// derive Asset Unpublished Transfers
+	unpublishedTransfer := DeriveUnpublishedChainTransfer(transferBtcPkt, vPackets[0].Outputs[LEFT_TRANSFER_OUTPUT_INDEX])
+	assetProofTxMsg := ProofTxMsg{TxMsg: unpublishedTransfer.finalTx, Proof: unpublishedTransfer.transferProof}
 
-	*unpublishedProofList = append(*unpublishedProofList, leftProofTxMsg, rightProofTxMsg)
+	*unpublishedProofList = append(*unpublishedProofList, assetProofTxMsg)
 
 	log.Println("Final Asset Transferred")
 
