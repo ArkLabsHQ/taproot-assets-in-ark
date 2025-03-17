@@ -1,26 +1,33 @@
 package taponark
 
 import (
+	"fmt"
 	"log"
+	"sync"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/psbt"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/lightninglabs/taproot-assets/asset"
 	"github.com/lightninglabs/taproot-assets/commitment"
 	"github.com/lightninglabs/taproot-assets/tappsbt"
+	"github.com/lightninglabs/taproot-assets/taprpc"
 )
 
-const BOARDING_TRANSFER_OUTPUT_INDEX = 1
-const ASSET_BOARDING_INPUT_INDEX = 0
-const BTC_BOARDING_INPUT_INDEX = 1
-const TRANSFER_INPUT_INDEX = 0
-const LEFT_TRANSFER_OUTPUT_INDEX = 1
-const RIGHT_TRANSFER_OUTPUT_INDEX = 2
+const BOARDING_ASSET_TRANSFER_OUTPUT_INDEX = 1
+const ASSET_ANCHOR_ROUND_ROOT_INPUT_INDEX = 0
+
 const CHANGE_OUTPUT_INDEX = 0
+
+const FEE uint64 = 10_000
+const DUMMY_ASSET_BTC_AMOUNT = 1_000
+const ROUND_ROOT_ANCHOR_OUTPUT_INDEX = 0
+const ROUND_ROOT_ASSET_OUTPUT_INDEX = 0
 
 func DeriveUnpublishedChainTransfer(btcPacket *psbt.Packet, transferOutput *tappsbt.VOutput) ChainTransfer {
 	internalKey := transferOutput.AnchorOutputInternalKey
@@ -72,7 +79,7 @@ func extractControlBlock(arkBtcScript ArkBtcScript, taprootAssetRoot []byte) *tx
 	return btcControlBlock
 }
 
-func addBtcInput(transferPacket *psbt.Packet, btcTransferDetails BtcTransferDetails) {
+func addBtcInputToPSBT(transferPacket *psbt.Packet, btcTransferDetails BtcTransferDetails) {
 	signingDetails := btcTransferDetails
 
 	transferPacket.UnsignedTx.TxIn = append(
@@ -114,4 +121,40 @@ func addBtcOutput(transferPacket *psbt.Packet, amount uint64, taprootKey *btcec.
 		TaprootTapTree:     nil,
 	})
 
+}
+
+// waitForTransfers concurrently waits for both the BTC confirmation and the asset transfer event.
+func waitForTransfers(bitcoinClient *BitcoinClient, serverTapClient *TapClient, txHash chainhash.Hash, assetAddr *taprpc.Addr, timeout time.Duration) error {
+	var wg sync.WaitGroup
+	errCh := make(chan error, 2)
+
+	// Wait for BTC confirmation concurrently.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := bitcoinClient.WaitForConfirmation(txHash, timeout); err != nil {
+			errCh <- fmt.Errorf("BTC confirmation failed: %w", err)
+		}
+	}()
+
+	// Wait for the asset transfer event concurrently.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := serverTapClient.IncomingTransferEvent(assetAddr, timeout); err != nil {
+			errCh <- fmt.Errorf("asset transfer event failed: %w", err)
+		}
+	}()
+
+	// Wait for both routines to finish.
+	wg.Wait()
+	close(errCh)
+
+	// If any error occurred, return the first one encountered.
+	for err := range errCh {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }

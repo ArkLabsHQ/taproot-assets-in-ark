@@ -20,55 +20,59 @@ import (
 	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
 )
 
-func CreateRoundTransfer(inputAssetProofFile []byte, inputSpendingDetails ArkSpendingDetails, inputTransfer ChainTransfer, assetId []byte, user, server *TapClient, level uint64, bitcoinClient BitcoinClient) ([]ProofTxMsg, []byte) {
-	unpublisedProofList := make([]ProofTxMsg, 0)
+func CreateRoundTransfer(boardingTransfer ArkBoardingTransfer, assetId []byte, user, server *TapClient, level uint64, bitcoinClient BitcoinClient) ([]VirtualTxOut, []byte) {
+	vtxoList := make([]VirtualTxOut, 0)
 
-	btcControlBlock := extractControlBlock(inputSpendingDetails.arkBtcScript, inputTransfer.taprootAssetRoot)
-	inputSpendingDetails.arkBtcScript.controlBlock = btcControlBlock
+	roundRootSpendingDetails := CreateRoundSpendingDetails(user, server)
+	roundRootTransfer := ConstructRoundIOFromBoarding(assetId, *&boardingTransfer, roundRootSpendingDetails, server)
 
-	createIntermediateChainTransfer(assetId, inputSpendingDetails, inputTransfer, level-1, user, server, &unpublisedProofList)
+	// Insert Control Block
+	btcControlBlock := extractControlBlock(roundRootSpendingDetails.arkBtcScript, roundRootTransfer.taprootAssetRoot)
+	roundRootSpendingDetails.arkBtcScript.controlBlock = btcControlBlock
 
-	sendTxResult := bitcoinClient.SendTransaction(inputTransfer.finalTx)
+	// Create Level 1 Branch Transaction
+	createIntermediateChainTransfer(assetId, roundRootSpendingDetails, roundRootTransfer, level-1, user, server, &vtxoList)
 
-	rootProofFile := UpdateAndAppendProof(inputAssetProofFile, inputTransfer.finalTx, inputTransfer.transferProof, sendTxResult)
+	sendTxResult := bitcoinClient.SendTransaction(roundRootTransfer.finalTx)
+
+	rootProofFile := UpdateAndAppendProof(boardingTransfer.AssetTransferDetails.RawProofFile, roundRootTransfer.finalTx, roundRootTransfer.transferProof, sendTxResult)
 
 	log.Println("Round Proof Fetched and Updated")
 
-	return unpublisedProofList, rootProofFile
+	return vtxoList, rootProofFile
 
 }
 
-func createIntermediateChainTransfer(assetId []byte, inputSpendingDetails ArkSpendingDetails, inputChainTransfer ChainTransfer, level uint64, user, server *TapClient, unpublishedProofList *[]ProofTxMsg) {
+func createIntermediateChainTransfer(assetId []byte, inputSpendingDetails ArkSpendingDetails, inputChainTransfer ChainTransfer, level uint64, user, server *TapClient, vtxoList *[]VirtualTxOut) {
 	if level == 0 {
-		createFinalChainTransfer(assetId, inputSpendingDetails, inputChainTransfer, user, server, unpublishedProofList)
+		createFinalChainTransfer(assetId, inputSpendingDetails, inputChainTransfer, user, server, vtxoList)
 		return
 	}
 
 	leftOutputSpendingDetails := CreateRoundSpendingDetails(user, server)
 	rightOutputSpendingDetail := CreateRoundSpendingDetails(user, server)
 
-	fee := int64(10_000)
-	btcAmount := (inputChainTransfer.anchorValue - fee) / 2 // Fee
-	assetAmount := inputChainTransfer.assetAmount / 2
+	branchBtcAmount := (inputChainTransfer.anchorValue - int64(FEE)) / 2 // Fee
+	branchAssetAmount := inputChainTransfer.assetAmount / 2
 
-	fundedPkt := tappsbt.ForInteractiveSend(asset.ID(assetId), assetAmount, leftOutputSpendingDetails.arkAssetScript.tapScriptKey, 0, 0, 0,
+	fundedPkt := tappsbt.ForInteractiveSend(asset.ID(assetId), branchAssetAmount, leftOutputSpendingDetails.arkAssetScript.tapScriptKey, 0, 0, 0,
 		keychain.KeyDescriptor{
 			PubKey: asset.NUMSPubKey,
 		}, asset.V0, &address.RegressionNetTap)
 
 	fundedPkt.Outputs[0].Type = tappsbt.TypeSplitRoot
-	leftScriptBranchPreimage := commitment.NewPreimageFromBranch(leftOutputSpendingDetails.arkBtcScript.Branch)
-	fundedPkt.Outputs[0].AnchorOutputTapscriptSibling = &leftScriptBranchPreimage
+	leftBranchScriptBranchPreimage := commitment.NewPreimageFromBranch(leftOutputSpendingDetails.arkBtcScript.Branch)
+	fundedPkt.Outputs[0].AnchorOutputTapscriptSibling = &leftBranchScriptBranchPreimage
 
-	tappsbt.AddOutput(fundedPkt, assetAmount, rightOutputSpendingDetail.arkAssetScript.tapScriptKey, 1,
+	tappsbt.AddOutput(fundedPkt, branchAssetAmount, rightOutputSpendingDetail.arkAssetScript.tapScriptKey, 1,
 		keychain.KeyDescriptor{
 			PubKey: asset.NUMSPubKey,
 		}, asset.V0)
-	rightScriptBranchPreimage := commitment.NewPreimageFromBranch(rightOutputSpendingDetail.arkBtcScript.Branch)
-	fundedPkt.Outputs[1].AnchorOutputTapscriptSibling = &rightScriptBranchPreimage
+	rightBranchScriptBranchPreimage := commitment.NewPreimageFromBranch(rightOutputSpendingDetail.arkBtcScript.Branch)
+	fundedPkt.Outputs[1].AnchorOutputTapscriptSibling = &rightBranchScriptBranchPreimage
 
 	// Note: This add input details
-	createAndSetInputIntermediate(fundedPkt, TRANSFER_INPUT_INDEX, inputChainTransfer, assetId)
+	createAndSetInputIntermediate(fundedPkt, inputChainTransfer, assetId)
 	// Note: This add output details
 	err := tapsend.PrepareOutputAssets(context.TODO(), fundedPkt)
 
@@ -84,8 +88,8 @@ func createIntermediateChainTransfer(assetId []byte, inputSpendingDetails ArkSpe
 	if err != nil {
 		log.Fatal(err)
 	}
-	transferBtcPkt.UnsignedTx.TxOut[0].Value = int64(btcAmount)
-	transferBtcPkt.UnsignedTx.TxOut[1].Value = int64(btcAmount)
+	transferBtcPkt.UnsignedTx.TxOut[0].Value = int64(branchBtcAmount)
+	transferBtcPkt.UnsignedTx.TxOut[1].Value = int64(branchBtcAmount)
 
 	//Adds Fees and commit
 	server.CommitVirtualPsbts(
@@ -105,8 +109,8 @@ func createIntermediateChainTransfer(assetId []byte, inputSpendingDetails ArkSpe
 		log.Fatal(err)
 	}
 
-	transferBtcPkt.Inputs[TRANSFER_INPUT_INDEX].FinalScriptWitness = buf.Bytes()
-	// Finalise PSBT
+	transferBtcPkt.Inputs[0].FinalScriptWitness = buf.Bytes()
+	// Finalise PSST
 	err = psbt.MaybeFinalizeAll(transferBtcPkt)
 
 	if err != nil {
@@ -122,26 +126,26 @@ func createIntermediateChainTransfer(assetId []byte, inputSpendingDetails ArkSpe
 	rightBtcControlBlock := extractControlBlock(rightOutputSpendingDetail.arkBtcScript, rightUnpublishedTransfer.taprootAssetRoot)
 
 	// derive and  Left and Right Proofs Details to the ProofList
-	leftOutputProofTxMsg := ProofTxMsg{TxMsg: leftUnpublishedTransfer.finalTx, Proof: leftUnpublishedTransfer.transferProof}
-	rightOutputProofTxMsg := ProofTxMsg{TxMsg: rightUnpublishedTransfer.finalTx, Proof: rightUnpublishedTransfer.transferProof}
-	*unpublishedProofList = append(*unpublishedProofList, leftOutputProofTxMsg, rightOutputProofTxMsg)
+	leftOutputProofTxMsg := VirtualTxOut{TxMsg: leftUnpublishedTransfer.finalTx, AssetProof: leftUnpublishedTransfer.transferProof, Index: 0, vtxoType: BRANCH}
+	rightOutputProofTxMsg := VirtualTxOut{TxMsg: rightUnpublishedTransfer.finalTx, AssetProof: rightUnpublishedTransfer.transferProof, Index: 1, vtxoType: BRANCH}
+	*vtxoList = append(*vtxoList, leftOutputProofTxMsg, rightOutputProofTxMsg)
 
 	leftOutputSpendingDetails.arkBtcScript.controlBlock = leftBtcControlBlock
 	rightOutputSpendingDetail.arkBtcScript.controlBlock = rightBtcControlBlock
 
 	log.Println("Intermediate Asset Transferred")
 	// Recursively create the next level of transfers
-	createIntermediateChainTransfer(assetId, leftOutputSpendingDetails, leftUnpublishedTransfer, level-1, user, server, unpublishedProofList)
-	createIntermediateChainTransfer(assetId, rightOutputSpendingDetail, rightUnpublishedTransfer, level-1, user, server, unpublishedProofList)
+	createIntermediateChainTransfer(assetId, leftOutputSpendingDetails, leftUnpublishedTransfer, level-1, user, server, vtxoList)
+	createIntermediateChainTransfer(assetId, rightOutputSpendingDetail, rightUnpublishedTransfer, level-1, user, server, vtxoList)
 
 }
 
-func createFinalChainTransfer(assetId []byte, inputSpendingDetails ArkSpendingDetails, inputChainTransfer ChainTransfer, user, server *TapClient, unpublishedProofList *[]ProofTxMsg) {
-	assetAmountInBtc := 1_000
-	changeAssetInBtc := 1_000
-	fee := 10_000
-	btcAmount := inputChainTransfer.anchorValue - int64(assetAmountInBtc) - int64(changeAssetInBtc) - int64(fee)
-
+func createFinalChainTransfer(assetId []byte, inputSpendingDetails ArkSpendingDetails, inputChainTransfer ChainTransfer, user, server *TapClient, unpublishedProofList *[]VirtualTxOut) {
+	assetOutputIndex := 1
+	assetAmountInBtc := DUMMY_ASSET_BTC_AMOUNT
+	changeAssetInBtc := DUMMY_ASSET_BTC_AMOUNT
+	btcAmount := inputChainTransfer.anchorValue - int64(assetAmountInBtc) - int64(changeAssetInBtc) - int64(FEE)
+	// TODO (Joshua Kindly Improve to only have two output)
 	asset_addr_resp, err := user.client.NewAddr(context.TODO(), &taprpc.NewAddrRequest{
 		AssetId: assetId,
 		Amt:     inputChainTransfer.assetAmount,
@@ -190,13 +194,13 @@ func createFinalChainTransfer(assetId []byte, inputSpendingDetails ArkSpendingDe
 
 	addresses := []*address.Tap{asset_addr}
 	// Note: This create a VPacket
-	fundedPkt, err := tappsbt.FromAddresses(addresses, LEFT_TRANSFER_OUTPUT_INDEX)
+	fundedPkt, err := tappsbt.FromAddresses(addresses, uint32(assetOutputIndex))
 	if err != nil {
 		log.Fatalf("cannot generate packet from address %v", err)
 	}
 
 	// Note: This add input details
-	createAndSetInputIntermediate(fundedPkt, TRANSFER_INPUT_INDEX, inputChainTransfer, assetId)
+	createAndSetInputIntermediate(fundedPkt, inputChainTransfer, assetId)
 
 	// Note: This add output details
 	tapsend.PrepareOutputAssets(context.TODO(), fundedPkt)
@@ -225,7 +229,7 @@ func createFinalChainTransfer(assetId []byte, inputSpendingDetails ArkSpendingDe
 		log.Fatal(err)
 	}
 
-	transferBtcPkt.Inputs[TRANSFER_INPUT_INDEX].FinalScriptWitness = buf.Bytes()
+	transferBtcPkt.Inputs[0].FinalScriptWitness = buf.Bytes()
 
 	// Finalise PSBT
 	err = psbt.MaybeFinalizeAll(transferBtcPkt)
@@ -234,10 +238,14 @@ func createFinalChainTransfer(assetId []byte, inputSpendingDetails ArkSpendingDe
 	}
 
 	// derive Asset Unpublished Transfers
-	unpublishedTransfer := DeriveUnpublishedChainTransfer(transferBtcPkt, vPackets[0].Outputs[LEFT_TRANSFER_OUTPUT_INDEX])
-	assetProofTxMsg := ProofTxMsg{TxMsg: unpublishedTransfer.finalTx, Proof: unpublishedTransfer.transferProof}
+	unpublishedTransfer := DeriveUnpublishedChainTransfer(transferBtcPkt, vPackets[0].Outputs[assetOutputIndex])
+	assetVtxo := VirtualTxOut{TxMsg: unpublishedTransfer.finalTx, AssetProof: unpublishedTransfer.transferProof, Index: assetOutputIndex, vtxoType: ASSET}
 
-	*unpublishedProofList = append(*unpublishedProofList, assetProofTxMsg)
+	// derive Btc Unpublished Transfers
+	btcOutputIndex := 2
+	btcVtxo := VirtualTxOut{TxMsg: unpublishedTransfer.finalTx, AssetProof: nil, Index: btcOutputIndex, vtxoType: BTC}
+
+	*unpublishedProofList = append(*unpublishedProofList, assetVtxo, btcVtxo)
 
 	log.Println("Final Asset Transferred")
 

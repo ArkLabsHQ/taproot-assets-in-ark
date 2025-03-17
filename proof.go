@@ -41,16 +41,16 @@ func UpdateAndAppendProof(proofFile []byte, finalTx *wire.MsgTx, transferProof *
 
 }
 
-func PublishTransfersAndSubmitProofs(assetId []byte, proofList []ProofTxMsg, genesisPoint string, proofFile []byte, user *TapClient, bitcoinClient BitcoinClient) {
+func PublishTransfersAndSubmitProofs(assetId []byte, proofList []VirtualTxOut, genesisPoint string, proofFile []byte, user *TapClient, bitcoinClient BitcoinClient) {
 	updatedProofList := make([][]byte, 0)
 
 	rootSentMessage := bitcoinClient.SendTransaction(proofList[0].TxMsg)
 
-	processParentAndChild := func(parentSentMessage BitcoinSendTxResult, parent, leftchild ProofTxMsg, proofFile []byte) {
-		updatedProof := UpdateAndAppendProof(proofFile, parent.TxMsg, parent.Proof, parentSentMessage)
+	processParentAndChild := func(parentSentMessage BitcoinSendTxResult, parent, leftchild VirtualTxOut, proofFile []byte) {
+		updatedProof := UpdateAndAppendProof(proofFile, parent.TxMsg, parent.AssetProof, parentSentMessage)
 
 		sentLeftMessage := bitcoinClient.SendTransaction(leftchild.TxMsg)
-		updatedLeftProof := UpdateAndAppendProof(updatedProof, leftchild.TxMsg, leftchild.Proof, sentLeftMessage)
+		updatedLeftProof := UpdateAndAppendProof(updatedProof, leftchild.TxMsg, leftchild.AssetProof, sentLeftMessage)
 
 		updatedProofList = append(updatedProofList, updatedLeftProof)
 	}

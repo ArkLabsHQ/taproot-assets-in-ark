@@ -1,10 +1,14 @@
 package taponark
 
 import (
+	"fmt"
 	"log"
+	"time"
 
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/rpcclient"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightningnetwork/lnd/lntest/wait"
 )
 
 type BitcoinSendTxResult struct {
@@ -36,12 +40,28 @@ func GetBitcoinClient(config BitcoinClientConfig) BitcoinClient {
 
 }
 
+func (b BitcoinClient) WaitForConfirmation(txhash chainhash.Hash, timeout time.Duration) error {
+	log.Println("awaiting block to be mined")
+	err := wait.NoError(func() error {
+		txInfo, err := b.client.GetTransaction(&txhash)
+		if err != nil {
+			return fmt.Errorf("failed to get transaction: %w", err)
+		}
+		if txInfo.Confirmations == 0 {
+			return fmt.Errorf("transaction not confirmed with hash %s", txhash.String())
+		}
+		return nil
+	}, timeout)
+
+	return err
+}
+
 func (b BitcoinClient) MineBlock() {
 	address1, err := b.client.GetNewAddress("")
 	if err != nil {
 		log.Fatalf("cannot generate address %v", err)
 	}
-	maxretries := int64(3)
+	maxretries := int64(5)
 	_, err = b.client.GenerateToAddress(1, address1, &maxretries)
 	if err != nil {
 		log.Fatalf("cannot generate to address %v", err)
@@ -60,7 +80,7 @@ func (b BitcoinClient) SendTransaction(transaction *wire.MsgTx) BitcoinSendTxRes
 	if err != nil {
 		log.Fatalf("cannot generate address %v", err)
 	}
-	maxretries := int64(3)
+	maxretries := int64(5)
 	blockhash, err := b.client.GenerateToAddress(1, address1, &maxretries)
 	if err != nil {
 		log.Fatalf("cannot generate to address %v", err)

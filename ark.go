@@ -19,9 +19,19 @@ import (
 	"github.com/lightningnetwork/lnd/keychain"
 )
 
-type ProofTxMsg struct {
-	Proof *proof.Proof
-	TxMsg *wire.MsgTx
+type VTXO_TYPE int
+
+const (
+	BRANCH = iota
+	ASSET
+	BTC
+)
+
+type VirtualTxOut struct {
+	AssetProof *proof.Proof
+	TxMsg      *wire.MsgTx
+	Index      int
+	vtxoType   VTXO_TYPE
 }
 
 const LOCK_BLOCK_HEIGHT = 4320
@@ -84,6 +94,7 @@ type AssetTransferDetails struct {
 	AssetTransferOutput *taprpc.TransferOutput
 	ArkSpendingDetails  ArkSpendingDetails
 	assetBoardingAmount uint64
+	*taprpc.ProofFile
 }
 
 type BtcTransferDetails struct {
@@ -105,16 +116,6 @@ func CreateRoundSpendingDetails(user, server *TapClient) ArkSpendingDetails {
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	// TODO: (JOSHUA, FIX)
-	// addr_resp, err := server.GetNewAddress(arkBtcScript.Branch, arkAssetScript.tapScriptKey, assetId, amount)
-	// if err != nil {
-	// 	log.Fatalf("cannot get address %v", err)
-	// }
-	// transferAddress, err := address.DecodeAddress(addr_resp.Encoded, &address.RegressionNetTap)
-	// if err != nil {
-	// 	log.Fatalf("cannot decode address %v", err)
-	// }
 
 	return ArkSpendingDetails{userScriptKey, userInternalKey, serverScriptKey, serverInternalKey, arkBtcScript, arkAssetScript}
 

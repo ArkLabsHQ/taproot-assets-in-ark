@@ -3,10 +3,6 @@ package taponark
 import (
 	"bytes"
 	"context"
-	"crypto/x509"
-	"encoding/hex"
-	"encoding/pem"
-	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -38,18 +34,7 @@ import (
 	"github.com/lightningnetwork/lnd/lntest/wait"
 	"github.com/lightningnetwork/lnd/macaroons"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
-	"gopkg.in/macaroon.v2"
 )
-
-func deserializeVPacket(packetBytes []byte) *tappsbt.VPacket {
-	p, err := tappsbt.NewFromRawBytes(bytes.NewReader(packetBytes), false)
-
-	if err != nil {
-
-	}
-	return p
-}
 
 type TapClient struct {
 	client         taprpc.TaprootAssetsClient
@@ -100,6 +85,10 @@ func (cl *TapClient) GetNewAddress(scriptBranch txscript.TapBranch, assetScriptK
 		},
 		TapscriptSibling: encodedBranchPreimage,
 	})
+
+	if err != nil {
+		log.Fatalf("Cannot Get new Asset Address %v", err)
+	}
 
 	return addr, nil
 }
@@ -162,8 +151,8 @@ func (cl *TapClient) GetNextKeys() (asset.ScriptKey,
 	return *scriptKey, internalKey
 }
 
-func (cl *TapClient) IncomingTransferEvent(addr *taprpc.Addr) {
-	_ = wait.NoError(func() error {
+func (cl *TapClient) IncomingTransferEvent(addr *taprpc.Addr, duration time.Duration) error {
+	err := wait.NoError(func() error {
 		resp, err := cl.client.AddrReceives(
 			context.TODO(), &taprpc.AddrReceivesRequest{
 				FilterAddr: addr.Encoded,
@@ -182,15 +171,10 @@ func (cl *TapClient) IncomingTransferEvent(addr *taprpc.Addr) {
 			return fmt.Errorf("got status %v, wanted %v",
 				resp.Events[0].Status, taprpc.AddrEventStatus_ADDR_EVENT_STATUS_COMPLETED)
 		}
-
-		log.Println("Got address event ")
-
 		return nil
-	}, time.Minute)
+	}, duration)
 
-	// if err != nil {
-	// 	log.Fatal("cannot fetch address event")
-	// }
+	return err
 }
 
 func (cl *TapClient) createMuSig2Session(
@@ -599,46 +583,6 @@ func NewBasicConn(tapdHost string, tapdPort string, tlsPath, macPath string) (*g
 	return conn, nil
 }
 
-// parseTLSAndMacaroon
-func parseTLSAndMacaroon(tlsData, macData string) (credentials.TransportCredentials,
-	*macaroon.Macaroon, error) {
-
-	tlsBytes, err := hex.DecodeString(tlsData)
-
-	if err != nil {
-		return nil, nil, err
-	}
-	block, _ := pem.Decode(tlsBytes)
-	if block == nil || block.Type != "CERTIFICATE" {
-		return nil, nil, errors.New("failed to decode PEM block " +
-			"containing tls certificate")
-	}
-	cert, err := x509.ParseCertificate(block.Bytes)
-	if err != nil {
-		return nil, nil, err
-	}
-	pool := x509.NewCertPool()
-	pool.AddCert(cert)
-	// Load the specified TLS certificate and build transport
-	// credentials.
-	creds := credentials.NewClientTLSFromCert(pool, "")
-
-	var macBytes []byte
-	mac := &macaroon.Macaroon{}
-	// Load the specified macaroon file.
-	macBytes, err = hex.DecodeString(macData)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	if err = mac.UnmarshalBinary(macBytes); err != nil {
-		return nil, nil, fmt.Errorf("unable to decode macaroon: %v",
-			err)
-	}
-
-	return creds, mac, nil
-}
-
 type muSig2PartialSigner struct {
 	sessID     []byte
 	lnd        *LndClient
@@ -747,7 +691,7 @@ func createAndSetAssetInput(vPkt *tappsbt.VPacket, idx int,
 	return nil
 }
 
-func createAndSetInputIntermediate(vPkt *tappsbt.VPacket, idx int,
+func createAndSetInputIntermediate(vPkt *tappsbt.VPacket,
 	roundDetails ChainTransfer, assetId []byte) error {
 
 	// At this point, we have a valid "coin" to spend in the commitment, so
@@ -757,7 +701,7 @@ func createAndSetInputIntermediate(vPkt *tappsbt.VPacket, idx int,
 	if err != nil {
 		log.Fatalf("cannot get TaprootScript %v", err)
 	}
-
+	idx := 0
 	prevID := asset.PrevID{
 		OutPoint:  *roundDetails.outpoint,
 		ID:        asset.ID(assetId),

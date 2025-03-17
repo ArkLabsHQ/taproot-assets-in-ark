@@ -1,6 +1,8 @@
 package taponark
 
 import (
+	"bytes"
+	"context"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/pem"
@@ -8,7 +10,9 @@ import (
 	"fmt"
 	"log"
 
+	"github.com/btcsuite/btcd/wire"
 	"github.com/lightningnetwork/lnd/lncfg"
+	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/signrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
 	"github.com/lightningnetwork/lnd/macaroons"
@@ -37,6 +41,29 @@ func InitLndClient(config LndClientConfig) LndClient {
 
 	return LndClient{client: signrpc.NewSignerClient(clientConn), wallet: walletrpc.NewWalletKitClient(clientConn), closeClient: cleanUp}
 
+}
+
+func (lc *LndClient) SendOutput(value int64, pkscript []byte) wire.MsgTx {
+	response, err := lc.wallet.SendOutputs(context.TODO(), &walletrpc.SendOutputsRequest{
+		SatPerKw: 2000,
+		Outputs: []*signrpc.TxOut{
+			{
+				Value:    value,
+				PkScript: pkscript,
+			},
+		},
+		MinConfs:              1,
+		SpendUnconfirmed:      false,
+		CoinSelectionStrategy: lnrpc.CoinSelectionStrategy_STRATEGY_USE_GLOBAL_CONFIG,
+	})
+	if err != nil {
+		log.Fatalf("cannot send btc to address %v", err)
+	}
+	// Deserialize the raw transaction bytes into the transaction.
+	msgTx := wire.NewMsgTx(wire.TxVersion)
+	if err := msgTx.Deserialize(bytes.NewReader(response.RawTx)); err != nil {
+		log.Fatalf("failed to deserialize transaction: %v", err)
+	}
 }
 
 func NewBasicLndConn(lndHost string, lndRpcPort, tlsPath, macPath string) (*grpc.ClientConn, error) {
