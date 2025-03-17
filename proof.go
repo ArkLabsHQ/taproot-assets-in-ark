@@ -34,11 +34,7 @@ func UpdateAndAppendProof(proofFile []byte, finalTx *wire.MsgTx, transferProof *
 
 	encodedProofFile, err := proof.EncodeFile(decodedFullProofFile)
 	if err != nil {
-<<<<<<< HEAD
-		log.Fatalf("cannot gully encode file %v", err)
-=======
 		log.Fatalf("cannot encode Proof %v", err)
->>>>>>> d1b355e (Implemented an improved config technique)
 	}
 
 	return encodedProofFile
