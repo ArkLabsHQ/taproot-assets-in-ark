@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/hex"
+	"log"
 	"taponark"
 )
 
@@ -45,7 +46,7 @@ func main() {
 		serverLndRPCHostPort = "localhost:" + serverLndRpcPort
 	)
 
-	assetId, _ := hex.DecodeString("c5af809cf2c04830d55af5bf1f6d34fe79246c199709ca16fd8199e8fe017ecd")
+	assetId, _ := hex.DecodeString("43902e99a18ff431608ff47d871e3367d9a729c6d3e13358bbb653fc97f1df16")
 	boardingAssetAmnt := 40
 	boardingBtcAmnt := 100_000
 
@@ -70,5 +71,7 @@ func main() {
 	proofList, proofFile := taponark.CreateRoundTransfer(fullproof.RawProofFile, roundRootSpendingDetails, roundRootTransfer, assetId, &exitUserTapClient, &serverTapClient, 2)
 	taponark.PublishTransfersAndSubmitProofs(assetId, proofList, fullproof.GenesisPoint, proofFile, &exitUserTapClient)
 	// wait for transfer to reach
+
+	log.Println("done with submission of proofs")
 
 }
