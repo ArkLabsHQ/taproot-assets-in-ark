@@ -16,14 +16,15 @@ type BitcoinClient struct {
 	client *rpcclient.Client
 }
 
-func GetBitcoinClient() BitcoinClient {
-	// Set up the connection configuration for your btcd RPC server.
+func GetBitcoinClient(config BitcoinClientConfig) BitcoinClient {
+	hostPort := config.Host + ":" + config.Port
+
 	connCfg := &rpcclient.ConnConfig{
-		Host:         "localhost:18443", // btcd's RPC host:port
-		User:         "polaruser",       // RPC username
-		Pass:         "polarpass",       // RPC password
-		HTTPPostMode: true,              // btcd only supports HTTP POST mode
-		DisableTLS:   true,              // Use TLS if configured
+		Host:         hostPort,        // btcd's RPC host:port
+		User:         config.User,     // RPC username
+		Pass:         config.Password, // RPC password
+		HTTPPostMode: true,            // btcd only supports HTTP POST mode
+		DisableTLS:   true,            // Use TLS if configured
 	}
 
 	// Create a new RPC client instance.

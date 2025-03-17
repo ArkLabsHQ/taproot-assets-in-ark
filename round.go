@@ -20,7 +20,7 @@ import (
 	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
 )
 
-func CreateRoundTransfer(inputAssetProofFile []byte, inputSpendingDetails ArkSpendingDetails, inputTransfer ChainTransfer, assetId []byte, user, server *TapClient, level uint64) ([]ProofTxMsg, []byte) {
+func CreateRoundTransfer(inputAssetProofFile []byte, inputSpendingDetails ArkSpendingDetails, inputTransfer ChainTransfer, assetId []byte, user, server *TapClient, level uint64, bitcoinClient BitcoinClient) ([]ProofTxMsg, []byte) {
 	unpublisedProofList := make([]ProofTxMsg, 0)
 
 	btcControlBlock := extractControlBlock(inputSpendingDetails.arkBtcScript, inputTransfer.taprootAssetRoot)
@@ -28,8 +28,7 @@ func CreateRoundTransfer(inputAssetProofFile []byte, inputSpendingDetails ArkSpe
 
 	createIntermediateChainTransfer(assetId, inputSpendingDetails, inputTransfer, level-1, user, server, &unpublisedProofList)
 
-	bcoinClient := GetBitcoinClient()
-	sendTxResult := bcoinClient.SendTransaction(inputTransfer.finalTx)
+	sendTxResult := bitcoinClient.SendTransaction(inputTransfer.finalTx)
 
 	rootProofFile := UpdateAndAppendProof(inputAssetProofFile, inputTransfer.finalTx, inputTransfer.transferProof, sendTxResult)
 

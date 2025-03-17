@@ -21,7 +21,7 @@ import (
 
 // user tap client
 
-func SpendToBoardingTransaction(assetId []byte, asset_amnt uint64, btc_amnt uint64, boardingClient, serverTapClient *TapClient) ArkBoardingTransfer {
+func SpendToBoardingTransaction(assetId []byte, asset_amnt uint64, btc_amnt uint64, boardingClient, serverTapClient *TapClient, bitcoinClient BitcoinClient) ArkBoardingTransfer {
 
 	/// 1. Send Asset From  Boarding User To Boarding Address
 	assetSpendingDetails := CreateBoardingSpendingDetails(boardingClient, serverTapClient)
@@ -98,8 +98,7 @@ func SpendToBoardingTransaction(assetId []byte, asset_amnt uint64, btc_amnt uint
 	log.Println("Boarding Bitcoin Transfered")
 
 	//TODO (Joshua) Ensure To Improve
-	bcoinClient := GetBitcoinClient()
-	bcoinClient.MineBlock()
+	bitcoinClient.MineBlock()
 
 	serverTapClient.IncomingTransferEvent(addr_resp)
 

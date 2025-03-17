@@ -34,23 +34,26 @@ func UpdateAndAppendProof(proofFile []byte, finalTx *wire.MsgTx, transferProof *
 
 	encodedProofFile, err := proof.EncodeFile(decodedFullProofFile)
 	if err != nil {
+<<<<<<< HEAD
 		log.Fatalf("cannot gully encode file %v", err)
+=======
+		log.Fatalf("cannot encode Proof %v", err)
+>>>>>>> d1b355e (Implemented an improved config technique)
 	}
 
 	return encodedProofFile
 
 }
 
-func PublishTransfersAndSubmitProofs(assetId []byte, proofList []ProofTxMsg, genesisPoint string, proofFile []byte, user *TapClient) {
-	bcoinClient := GetBitcoinClient()
+func PublishTransfersAndSubmitProofs(assetId []byte, proofList []ProofTxMsg, genesisPoint string, proofFile []byte, user *TapClient, bitcoinClient BitcoinClient) {
 	updatedProofList := make([][]byte, 0)
 
-	rootSentMessage := bcoinClient.SendTransaction(proofList[0].TxMsg)
+	rootSentMessage := bitcoinClient.SendTransaction(proofList[0].TxMsg)
 
 	processParentAndChild := func(parentSentMessage BitcoinSendTxResult, parent, leftchild ProofTxMsg, proofFile []byte) {
 		updatedProof := UpdateAndAppendProof(proofFile, parent.TxMsg, parent.Proof, parentSentMessage)
 
-		sentLeftMessage := bcoinClient.SendTransaction(leftchild.TxMsg)
+		sentLeftMessage := bitcoinClient.SendTransaction(leftchild.TxMsg)
 		updatedLeftProof := UpdateAndAppendProof(updatedProof, leftchild.TxMsg, leftchild.Proof, sentLeftMessage)
 
 		updatedProofList = append(updatedProofList, updatedLeftProof)

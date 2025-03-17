@@ -23,8 +23,9 @@ type LndClient struct {
 	closeClient func()
 }
 
-func InitLndClient(hostPort, lndport, tlsData, macaroonData string) LndClient {
-	clientConn, err := NewBasicLndConn(hostPort, lndport, tlsData, macaroonData)
+func InitLndClient(config LndClientConfig) LndClient {
+	hostPort := config.Host + ":" + config.Port
+	clientConn, err := NewBasicLndConn(hostPort, config.Port, config.TlsCert, config.AdminMacaroon)
 
 	if err != nil {
 		log.Fatalf("cannot initiate client")

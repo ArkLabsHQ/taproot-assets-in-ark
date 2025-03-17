@@ -59,8 +59,9 @@ type TapClient struct {
 	closeClient    func()
 }
 
-func InitTapClient(hostPort, tapdport, tlsData, macaroonData string, lndClient LndClient) TapClient {
-	clientConn, err := NewBasicConn(hostPort, tapdport, tlsData, macaroonData)
+func InitTapClient(tapConfig TapClientConfig, lndClient LndClient) TapClient {
+	hostPort := tapConfig.Host + ":" + tapConfig.Port
+	clientConn, err := NewBasicConn(hostPort, tapConfig.Port, tapConfig.TlsCert, tapConfig.AdminMacaroon)
 
 	if err != nil {
 		log.Fatalf("cannot initiate client")
