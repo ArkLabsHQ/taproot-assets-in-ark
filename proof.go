@@ -3,6 +3,7 @@ package taponark
 import (
 	"context"
 	"log"
+	"time"
 
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/taproot-assets/proof"
@@ -41,22 +42,22 @@ func UpdateAndAppendProof(proofFile []byte, finalTx *wire.MsgTx, transferProof *
 
 }
 
-func PublishTransfersAndSubmitProofs(assetId []byte, proofList []VirtualTxOut, genesisPoint string, proofFile []byte, user *TapClient, bitcoinClient BitcoinClient) {
+func PublishTransfersAndSubmitProofs(assetId []byte, vtxoList []VirtualTxOut, genesisPoint string, rootProof []byte, user *TapClient, bitcoinClient *BitcoinClient) {
 	updatedProofList := make([][]byte, 0)
 
-	rootSentMessage := bitcoinClient.SendTransaction(proofList[0].TxMsg)
+	rootSentMessage := bitcoinClient.SendTransaction(vtxoList[0].TxMsg, time.Minute)
 
 	processParentAndChild := func(parentSentMessage BitcoinSendTxResult, parent, leftchild VirtualTxOut, proofFile []byte) {
 		updatedProof := UpdateAndAppendProof(proofFile, parent.TxMsg, parent.AssetProof, parentSentMessage)
 
-		sentLeftMessage := bitcoinClient.SendTransaction(leftchild.TxMsg)
+		sentLeftMessage := bitcoinClient.SendTransaction(leftchild.TxMsg, time.Minute)
 		updatedLeftProof := UpdateAndAppendProof(updatedProof, leftchild.TxMsg, leftchild.AssetProof, sentLeftMessage)
 
 		updatedProofList = append(updatedProofList, updatedLeftProof)
 	}
 
-	processParentAndChild(rootSentMessage, proofList[0], proofList[2], proofFile)
-	processParentAndChild(rootSentMessage, proofList[1], proofList[3], proofFile)
+	processParentAndChild(rootSentMessage, vtxoList[0], vtxoList[2], rootProof)
+	processParentAndChild(rootSentMessage, vtxoList[1], vtxoList[4], rootProof)
 
 	log.Println("Exit Proof appended")
 

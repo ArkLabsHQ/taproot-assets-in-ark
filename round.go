@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"log"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
@@ -24,7 +25,7 @@ func CreateRoundTransfer(boardingTransfer ArkBoardingTransfer, assetId []byte, u
 	vtxoList := make([]VirtualTxOut, 0)
 
 	roundRootSpendingDetails := CreateRoundSpendingDetails(user, server)
-	roundRootTransfer := ConstructRoundIOFromBoarding(assetId, *&boardingTransfer, roundRootSpendingDetails, server)
+	roundRootTransfer := ConstructRoundIOFromBoarding(assetId, boardingTransfer, roundRootSpendingDetails, server)
 
 	// Insert Control Block
 	btcControlBlock := extractControlBlock(roundRootSpendingDetails.arkBtcScript, roundRootTransfer.taprootAssetRoot)
@@ -33,11 +34,11 @@ func CreateRoundTransfer(boardingTransfer ArkBoardingTransfer, assetId []byte, u
 	// Create Level 1 Branch Transaction
 	createIntermediateChainTransfer(assetId, roundRootSpendingDetails, roundRootTransfer, level-1, user, server, &vtxoList)
 
-	sendTxResult := bitcoinClient.SendTransaction(roundRootTransfer.finalTx)
+	sendTxResult := bitcoinClient.SendTransaction(roundRootTransfer.finalTx, time.Minute)
 
 	rootProofFile := UpdateAndAppendProof(boardingTransfer.AssetTransferDetails.RawProofFile, roundRootTransfer.finalTx, roundRootTransfer.transferProof, sendTxResult)
 
-	log.Println("Round Proof Fetched and Updated")
+	log.Printf("\nRound Transaction Hash %s", roundRootTransfer.finalTx.TxHash().String())
 
 	return vtxoList, rootProofFile
 
@@ -126,21 +127,20 @@ func createIntermediateChainTransfer(assetId []byte, inputSpendingDetails ArkSpe
 	rightBtcControlBlock := extractControlBlock(rightOutputSpendingDetail.arkBtcScript, rightUnpublishedTransfer.taprootAssetRoot)
 
 	// derive and  Left and Right Proofs Details to the ProofList
-	leftOutputProofTxMsg := VirtualTxOut{TxMsg: leftUnpublishedTransfer.finalTx, AssetProof: leftUnpublishedTransfer.transferProof, Index: 0, vtxoType: BRANCH}
-	rightOutputProofTxMsg := VirtualTxOut{TxMsg: rightUnpublishedTransfer.finalTx, AssetProof: rightUnpublishedTransfer.transferProof, Index: 1, vtxoType: BRANCH}
+	leftOutputProofTxMsg := VirtualTxOut{TxMsg: leftUnpublishedTransfer.finalTx, AssetProof: leftUnpublishedTransfer.transferProof, Index: 0, vtxoType: BRANCH, BtcAmount: branchBtcAmount, AssetAmount: branchAssetAmount}
+	rightOutputProofTxMsg := VirtualTxOut{TxMsg: rightUnpublishedTransfer.finalTx, AssetProof: rightUnpublishedTransfer.transferProof, Index: 1, vtxoType: BRANCH, BtcAmount: branchBtcAmount, AssetAmount: branchAssetAmount}
 	*vtxoList = append(*vtxoList, leftOutputProofTxMsg, rightOutputProofTxMsg)
 
 	leftOutputSpendingDetails.arkBtcScript.controlBlock = leftBtcControlBlock
 	rightOutputSpendingDetail.arkBtcScript.controlBlock = rightBtcControlBlock
 
-	log.Println("Intermediate Asset Transferred")
 	// Recursively create the next level of transfers
 	createIntermediateChainTransfer(assetId, leftOutputSpendingDetails, leftUnpublishedTransfer, level-1, user, server, vtxoList)
 	createIntermediateChainTransfer(assetId, rightOutputSpendingDetail, rightUnpublishedTransfer, level-1, user, server, vtxoList)
 
 }
 
-func createFinalChainTransfer(assetId []byte, inputSpendingDetails ArkSpendingDetails, inputChainTransfer ChainTransfer, user, server *TapClient, unpublishedProofList *[]VirtualTxOut) {
+func createFinalChainTransfer(assetId []byte, inputSpendingDetails ArkSpendingDetails, inputChainTransfer ChainTransfer, user, server *TapClient, vtxoList *[]VirtualTxOut) {
 	assetOutputIndex := 1
 	assetAmountInBtc := DUMMY_ASSET_BTC_AMOUNT
 	changeAssetInBtc := DUMMY_ASSET_BTC_AMOUNT
@@ -239,14 +239,12 @@ func createFinalChainTransfer(assetId []byte, inputSpendingDetails ArkSpendingDe
 
 	// derive Asset Unpublished Transfers
 	unpublishedTransfer := DeriveUnpublishedChainTransfer(transferBtcPkt, vPackets[0].Outputs[assetOutputIndex])
-	assetVtxo := VirtualTxOut{TxMsg: unpublishedTransfer.finalTx, AssetProof: unpublishedTransfer.transferProof, Index: assetOutputIndex, vtxoType: ASSET}
+	assetVtxo := VirtualTxOut{TxMsg: unpublishedTransfer.finalTx, AssetProof: unpublishedTransfer.transferProof, Index: assetOutputIndex, vtxoType: ASSET, AssetAmount: inputChainTransfer.assetAmount}
 
 	// derive Btc Unpublished Transfers
 	btcOutputIndex := 2
-	btcVtxo := VirtualTxOut{TxMsg: unpublishedTransfer.finalTx, AssetProof: nil, Index: btcOutputIndex, vtxoType: BTC}
+	btcVtxo := VirtualTxOut{TxMsg: unpublishedTransfer.finalTx, AssetProof: nil, Index: btcOutputIndex, vtxoType: BTC, BtcAmount: btcAmount}
 
-	*unpublishedProofList = append(*unpublishedProofList, assetVtxo, btcVtxo)
-
-	log.Println("Final Asset Transferred")
+	*vtxoList = append(*vtxoList, assetVtxo, btcVtxo)
 
 }

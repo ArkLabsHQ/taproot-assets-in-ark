@@ -64,6 +64,8 @@ func (lc *LndClient) SendOutput(value int64, pkscript []byte) wire.MsgTx {
 	if err := msgTx.Deserialize(bytes.NewReader(response.RawTx)); err != nil {
 		log.Fatalf("failed to deserialize transaction: %v", err)
 	}
+
+	return *msgTx
 }
 
 func NewBasicLndConn(lndHost string, lndRpcPort, tlsPath, macPath string) (*grpc.ClientConn, error) {

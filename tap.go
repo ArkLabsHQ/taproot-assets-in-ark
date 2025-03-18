@@ -114,6 +114,41 @@ func (cl *TapClient) ExportProof(assetId []byte, scriptKey []byte) *taprpc.Proof
 	return fullProof
 }
 
+func (cl *TapClient) GetBalance(assetId []byte) (uint64, int64) {
+	assetbalanceResponse, err := cl.client.ListBalances(context.TODO(), &taprpc.ListBalancesRequest{
+		GroupBy: &taprpc.ListBalancesRequest_AssetId{
+			AssetId: true,
+		},
+		AssetFilter: assetId,
+	})
+
+	assetBalance := uint64(0)
+
+	for _, balance := range assetbalanceResponse.AssetBalances {
+		assetBalance = balance.Balance
+		break
+	}
+
+	if err != nil {
+		log.Fatalf("cannot get asset balance %v", err)
+	}
+
+	btcBalanceResponse, err := cl.lndClient.wallet.ListAddresses(context.TODO(), &walletrpc.ListAddressesRequest{})
+
+	if err != nil {
+		log.Fatalf("cannot get btc balance %v", err)
+	}
+
+	btcBalance := int64(0)
+	for _, bc := range btcBalanceResponse.AccountWithAddresses {
+		for _, ac := range bc.Addresses {
+			btcBalance += ac.Balance
+		}
+	}
+
+	return assetBalance, btcBalance
+}
+
 func (cl *TapClient) GetNextKeys() (asset.ScriptKey,
 	keychain.KeyDescriptor) {
 
@@ -454,13 +489,6 @@ func (cl *TapClient) partialSignBtcTransfer(pkt *psbt.Packet, length int,
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	b64, err := pkt.B64Encode()
-	if err != nil {
-		log.Fatalf("failed to Encode pkt")
-
-	}
-	log.Println(b64)
 
 	resp, err := cl.lndClient.wallet.SignPsbt(
 		context.TODO(), &walletrpc.SignPsbtRequest{

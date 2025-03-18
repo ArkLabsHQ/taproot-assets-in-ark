@@ -43,7 +43,7 @@ func GetBitcoinClient(config BitcoinClientConfig) BitcoinClient {
 func (b BitcoinClient) WaitForConfirmation(txhash chainhash.Hash, timeout time.Duration) error {
 	log.Println("awaiting block to be mined")
 	err := wait.NoError(func() error {
-		txInfo, err := b.client.GetTransaction(&txhash)
+		txInfo, err := b.client.GetRawTransactionVerbose(&txhash)
 		if err != nil {
 			return fmt.Errorf("failed to get transaction: %w", err)
 		}
@@ -56,45 +56,48 @@ func (b BitcoinClient) WaitForConfirmation(txhash chainhash.Hash, timeout time.D
 	return err
 }
 
-func (b BitcoinClient) MineBlock() {
-	address1, err := b.client.GetNewAddress("")
-	if err != nil {
-		log.Fatalf("cannot generate address %v", err)
-	}
-	maxretries := int64(5)
-	_, err = b.client.GenerateToAddress(1, address1, &maxretries)
-	if err != nil {
-		log.Fatalf("cannot generate to address %v", err)
-	}
-}
-
-func (b BitcoinClient) SendTransaction(transaction *wire.MsgTx) BitcoinSendTxResult {
-	_, err := b.client.SendRawTransaction(transaction, true)
+func (b BitcoinClient) SendTransaction(transaction *wire.MsgTx, timeout time.Duration) BitcoinSendTxResult {
+	txhash, err := b.client.SendRawTransaction(transaction, true)
 	if err != nil {
 		log.Fatalf("cannot send raw transaction %v", err)
 	}
 
-	log.Println("transaction_sent")
+	log.Println("awaiting confirmation")
 
-	address1, err := b.client.GetNewAddress("")
+	var bitcoinSendResult BitcoinSendTxResult
+
+	err = wait.NoError(func() error {
+		txInfo, err := b.client.GetRawTransactionVerbose(txhash)
+		if err != nil {
+			return fmt.Errorf("failed to get transaction: %w", err)
+		}
+		if txInfo.Confirmations < 1 {
+			return fmt.Errorf("transaction not confirmed with hash %s", txhash.String())
+		}
+
+		var blockhash chainhash.Hash
+		err = chainhash.Decode(&blockhash, txInfo.BlockHash)
+		if err != nil {
+			return fmt.Errorf("cannot decode chainhash %v", err)
+		}
+
+		block, err := b.client.GetBlock(&blockhash)
+		if err != nil {
+			return fmt.Errorf("cannot get block %v", err)
+		}
+
+		blockheight, err := b.client.GetBlockCount()
+		if err != nil {
+			return fmt.Errorf("cannot get blocokheight %v", err)
+		}
+
+		bitcoinSendResult = BitcoinSendTxResult{block, blockheight}
+		return nil
+	}, timeout)
+
 	if err != nil {
-		log.Fatalf("cannot generate address %v", err)
-	}
-	maxretries := int64(5)
-	blockhash, err := b.client.GenerateToAddress(1, address1, &maxretries)
-	if err != nil {
-		log.Fatalf("cannot generate to address %v", err)
+		log.Fatalf("Error In Sending Transaction %v", err)
 	}
 
-	block, err := b.client.GetBlock(blockhash[0])
-	if err != nil {
-		log.Fatalf("cannot get block %v", err)
-	}
-
-	blockheight, err := b.client.GetBlockCount()
-	if err != nil {
-		log.Fatalf("cannot get block height %v", err)
-	}
-
-	return BitcoinSendTxResult{block, blockheight}
+	return bitcoinSendResult
 }

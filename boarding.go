@@ -40,14 +40,6 @@ func OnboardUser(assetId []byte, asset_amnt uint64, btc_amnt uint64, boardingCli
 	assetControlBlock := extractControlBlock(assetSpendingDetails.arkBtcScript, taprootAssetRoot)
 	assetSpendingDetails.arkBtcScript.controlBlock = assetControlBlock
 
-	// Derive Onboard Proof
-	assetTransferProof := serverTapClient.ExportProof(assetId,
-		assetTransferOutput.ScriptKey,
-	)
-
-	assetTransferDetails := AssetTransferDetails{assetTransferOutput, assetSpendingDetails, asset_amnt, assetTransferProof}
-	log.Println("Boarding Asset Transfered")
-
 	/// 2. Send BTC From Boarding User To Boarding Address
 	zeroHash := taprootAssetRoot
 	btcSpendingDetails := CreateBoardingSpendingDetails(boardingClient, serverTapClient)
@@ -84,10 +76,14 @@ func OnboardUser(assetId []byte, asset_amnt uint64, btc_amnt uint64, boardingCli
 		txout, transferOutpoint, btc_amnt, btcSpendingDetails,
 	}
 
-	log.Println("Boarding Bitcoin Transfered")
-
 	// Ensure Btc and Asset Transfer Transfer
 	waitForTransfers(bitcoinClient, serverTapClient, msgTx.TxHash(), addr_resp, time.Minute)
+
+	// Derive Onboard Proof
+	assetTransferProof := serverTapClient.ExportProof(assetId,
+		assetTransferOutput.ScriptKey,
+	)
+	assetTransferDetails := AssetTransferDetails{assetTransferOutput, assetSpendingDetails, asset_amnt, assetTransferProof}
 
 	return ArkBoardingTransfer{assetTransferDetails, btcTransferDetails, boardingClient}
 }

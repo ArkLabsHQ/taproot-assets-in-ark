@@ -28,10 +28,12 @@ const (
 )
 
 type VirtualTxOut struct {
-	AssetProof *proof.Proof
-	TxMsg      *wire.MsgTx
-	Index      int
-	vtxoType   VTXO_TYPE
+	AssetProof  *proof.Proof
+	TxMsg       *wire.MsgTx
+	Index       int
+	vtxoType    VTXO_TYPE
+	AssetAmount uint64
+	BtcAmount   int64
 }
 
 const LOCK_BLOCK_HEIGHT = 4320
@@ -385,15 +387,13 @@ func CreateRoundArkAssetScript(
 }
 
 func CreateAndInsertAssetWitness(arkSpendingDetails ArkSpendingDetails, fundedPkt *tappsbt.VPacket, user, server *TapClient) {
+	// created asset partial sig for server
 	_, serverSessionId := server.partialSignAssetTransfer(fundedPkt,
 		&arkSpendingDetails.arkAssetScript.cooperativeSpend, arkSpendingDetails.serverScriptKey.RawKey, arkSpendingDetails.arkAssetScript.serverNonce, arkSpendingDetails.userScriptKey.RawKey.PubKey, arkSpendingDetails.arkAssetScript.userNonce.PubNonce)
 
-	log.Println("created asset partial for server")
-
+	//created asset partial sig for user
 	userPartialSig, _ := user.partialSignAssetTransfer(fundedPkt,
 		&arkSpendingDetails.arkAssetScript.cooperativeSpend, arkSpendingDetails.userScriptKey.RawKey, arkSpendingDetails.arkAssetScript.userNonce, arkSpendingDetails.serverScriptKey.RawKey.PubKey, arkSpendingDetails.arkAssetScript.serverNonce.PubNonce)
-
-	log.Println("created asset partial sig for user")
 
 	transferAssetWitness := server.combineSigs(serverSessionId, userPartialSig, arkSpendingDetails.arkAssetScript.cooperativeSpend, arkSpendingDetails.arkAssetScript.tree, arkSpendingDetails.arkAssetScript.controlBlock)
 
@@ -431,12 +431,11 @@ func CreateBtcWitness(arkSpendingDetails []ArkSpendingDetails, btcPacket *psbt.P
 
 	}
 
+	// create btc partial sig for server
 	serverBtcPartialSigs := server.partialSignBtcTransfer(
 		btcPacket, inputLength,
 		serverkeys, serverbtcControlBytesList, serverTapLeaves,
 	)
-
-	log.Println("created btc partial sig for server")
 
 	userbtcControlBytesList := make([][]byte, inputLength)
 	userkeys := make([]keychain.KeyDescriptor, inputLength)
@@ -459,8 +458,7 @@ func CreateBtcWitness(arkSpendingDetails []ArkSpendingDetails, btcPacket *psbt.P
 		userkeys, userbtcControlBytesList, userTapLeaves,
 	)
 
-	log.Println("created btc partial sig for user")
-
+	// created btc partial sig for user
 	txwitnessList := make([]wire.TxWitness, inputLength)
 
 	for i := 0; i < inputLength; i++ {
