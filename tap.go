@@ -101,6 +101,14 @@ func (cl *TapClient) SendAsset(addr *taprpc.Addr) (*taprpc.SendAssetResponse, er
 	)
 }
 
+// func (cl *TapClient) CreateAsset(addr *taprpc.Addr) (*taprpc.SendAssetResponse, error) {
+// 	return cl.client.(
+// 		context.TODO(), &taprpc.SendAssetRequest{
+// 			TapAddrs: []string{addr.Encoded},
+// 		},
+// 	)
+// }
+
 func (cl *TapClient) ExportProof(assetId []byte, scriptKey []byte) *taprpc.ProofFile {
 	fullProof, err := cl.client.ExportProof(context.TODO(), &taprpc.ExportProofRequest{
 		AssetId:   assetId,

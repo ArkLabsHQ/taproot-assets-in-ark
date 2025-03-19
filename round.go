@@ -10,7 +10,6 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcd/txscript"
 	"github.com/lightninglabs/taproot-assets/address"
 	"github.com/lightninglabs/taproot-assets/asset"
 	"github.com/lightninglabs/taproot-assets/commitment"
@@ -180,11 +179,9 @@ func createFinalChainTransfer(assetId []byte, inputSpendingDetails ArkSpendingDe
 		log.Fatalf("cannot parse Internal Key %v", err)
 	}
 
-	taprootKey := txscript.ComputeTaprootOutputKey(parsedInternalKey, []byte{})
-
 	// Import watch only wallet
 	_, err = user.lndClient.wallet.ImportPublicKey(context.TODO(), &walletrpc.ImportPublicKeyRequest{
-		PublicKey:   schnorr.SerializePubKey(taprootKey),
+		PublicKey:   schnorr.SerializePubKey(parsedInternalKey),
 		AddressType: walletrpc.AddressType_TAPROOT_PUBKEY,
 	})
 
@@ -212,7 +209,7 @@ func createFinalChainTransfer(assetId []byte, inputSpendingDetails ArkSpendingDe
 	if err != nil {
 		log.Fatal(err)
 	}
-	addBtcOutput(transferBtcPkt, uint64(btcAmount), taprootKey, btc_addr.ScriptAddress())
+	addBtcOutput(transferBtcPkt, uint64(btcAmount), parsedInternalKey)
 
 	server.CommitVirtualPsbts(
 		transferBtcPkt, vPackets,

@@ -100,7 +100,10 @@ func addBtcInputToPSBT(transferPacket *psbt.Packet, btcTransferDetails BtcTransf
 
 }
 
-func addBtcOutput(transferPacket *psbt.Packet, amount uint64, taprootKey *btcec.PublicKey, rawInternalKey []byte) {
+func addBtcOutput(transferPacket *psbt.Packet, amount uint64, internalKey *btcec.PublicKey) {
+
+	taprootKey := txscript.ComputeTaprootOutputKey(internalKey, []byte{})
+
 	pkscript, err := txscript.PayToTaprootScript(taprootKey)
 
 	if err != nil {
@@ -117,7 +120,7 @@ func addBtcOutput(transferPacket *psbt.Packet, amount uint64, taprootKey *btcec.
 	)
 
 	transferPacket.Outputs = append(transferPacket.Outputs, psbt.POutput{
-		TaprootInternalKey: rawInternalKey,
+		TaprootInternalKey: schnorr.SerializePubKey(internalKey),
 		TaprootTapTree:     nil,
 	})
 
