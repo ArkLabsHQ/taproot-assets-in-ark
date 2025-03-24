@@ -1,6 +1,8 @@
 package taponark
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"sync"
@@ -160,4 +162,14 @@ func waitForTransfers(bitcoinClient *BitcoinClient, serverTapClient *TapClient, 
 		}
 	}
 	return nil
+}
+
+// RandomHexString generates a random hexadecimal string of length n*2.
+func RandomHexString(n int) (string, error) {
+	// n bytes will result in n*2 hex characters.
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }

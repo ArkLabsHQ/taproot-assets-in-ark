@@ -16,6 +16,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/lightninglabs/lndclient"
+	"github.com/lightninglabs/taproot-assets/address"
 	"github.com/lightninglabs/taproot-assets/asset"
 	"github.com/lightninglabs/taproot-assets/commitment"
 	"github.com/lightninglabs/taproot-assets/fn"
@@ -23,7 +24,9 @@ import (
 	"github.com/lightninglabs/taproot-assets/tappsbt"
 	"github.com/lightninglabs/taproot-assets/taprpc"
 	"github.com/lightninglabs/taproot-assets/taprpc/assetwalletrpc"
+	"github.com/lightninglabs/taproot-assets/taprpc/mintrpc"
 	"github.com/lightninglabs/taproot-assets/taprpc/tapdevrpc"
+	"github.com/lightninglabs/taproot-assets/taprpc/universerpc"
 	"github.com/lightninglabs/taproot-assets/tapscript"
 	"github.com/lightninglabs/taproot-assets/tapsend"
 
@@ -39,14 +42,18 @@ import (
 type TapClient struct {
 	client         taprpc.TaprootAssetsClient
 	wallet         assetwalletrpc.AssetWalletClient
-	universeclient tapdevrpc.TapDevClient
+	devclient      tapdevrpc.TapDevClient
+	mintclient     mintrpc.MintClient
+	universeclient universerpc.UniverseClient
 	lndClient      LndClient
 	closeClient    func()
+	chainParams    chaincfg.Params
+	tapParams      address.ChainParams
 }
 
-func InitTapClient(tapConfig TapClientConfig, lndClient LndClient) TapClient {
+func InitTapClient(tapConfig TapClientConfig, lndClient LndClient, tlsCert, adminMacaroon string, chainParams chaincfg.Params, tapParams address.ChainParams) TapClient {
 	hostPort := tapConfig.Host + ":" + tapConfig.Port
-	clientConn, err := NewBasicConn(hostPort, tapConfig.Port, tapConfig.TlsCert, tapConfig.AdminMacaroon)
+	clientConn, err := NewBasicConn(hostPort, tapConfig.Port, tlsCert, adminMacaroon)
 
 	if err != nil {
 		log.Fatalf("cannot initiate client")
@@ -55,10 +62,19 @@ func InitTapClient(tapConfig TapClientConfig, lndClient LndClient) TapClient {
 	cleanUp := func() {
 		clientConn.Close()
 	}
-	universeclient := tapdevrpc.NewTapDevClient(clientConn)
-	return TapClient{client: taprpc.NewTaprootAssetsClient(clientConn), wallet: assetwalletrpc.NewAssetWalletClient(clientConn), universeclient: universeclient,
-		closeClient: cleanUp,
-		lndClient:   lndClient,
+	devclient := tapdevrpc.NewTapDevClient(clientConn)
+
+	mintclient := mintrpc.NewMintClient(clientConn)
+	universeclient := universerpc.NewUniverseClient(clientConn)
+
+	return TapClient{client: taprpc.NewTaprootAssetsClient(clientConn), wallet: assetwalletrpc.NewAssetWalletClient(clientConn),
+		devclient:      devclient,
+		mintclient:     mintclient,
+		universeclient: universeclient,
+		closeClient:    cleanUp,
+		lndClient:      lndClient,
+		chainParams:    chainParams,
+		tapParams:      tapParams,
 	}
 
 }
@@ -93,6 +109,19 @@ func (cl *TapClient) GetNewAddress(scriptBranch txscript.TapBranch, assetScriptK
 	return addr, nil
 }
 
+func (cl *TapClient) GetBtcAddress() string {
+	addr, err := cl.lndClient.wallet.NextAddr(context.TODO(), &walletrpc.AddrRequest{
+		Type:   walletrpc.AddressType_TAPROOT_PUBKEY,
+		Change: false,
+	})
+
+	if err != nil {
+		log.Fatalf("Cannot Get new Btc Address %v", err)
+	}
+
+	return addr.Addr
+}
+
 func (cl *TapClient) SendAsset(addr *taprpc.Addr) (*taprpc.SendAssetResponse, error) {
 	return cl.client.SendAsset(
 		context.TODO(), &taprpc.SendAssetRequest{
@@ -120,6 +149,47 @@ func (cl *TapClient) ExportProof(assetId []byte, scriptKey []byte) *taprpc.Proof
 	}
 
 	return fullProof
+}
+
+func (cl *TapClient) CreateAsset(duration time.Duration) []byte {
+	// Mint an asset into a downgraded anchor commitment.
+	manualAssetName, err := RandomHexString(5)
+	if err != nil {
+		log.Fatalf("cannot generate random string %v", err)
+	}
+	mintAsset := mintrpc.MintAsset{
+		AssetVersion: 0,
+		AssetType:    taprpc.AssetType_NORMAL,
+		Name:         manualAssetName,
+		AssetMeta: &taprpc.AssetMeta{
+			Data: []byte("not metadata"),
+		},
+		Amount: 100_000,
+	}
+	req := mintrpc.MintAssetRequest{
+		Asset:         &mintAsset,
+		ShortResponse: true,
+	}
+
+	_, err = cl.mintclient.MintAsset(context.TODO(), &req)
+	if err != nil {
+		log.Fatalf("cannot mint asset %v", err)
+	}
+
+	_, err = cl.mintclient.FinalizeBatch(context.TODO(), &mintrpc.FinalizeBatchRequest{
+		ShortResponse: true,
+	})
+	if err != nil {
+		log.Fatalf("cannot finalise batch %v", err)
+	}
+
+	assetId, err := cl.IncomingMintEvent(manualAssetName, duration)
+
+	if err != nil {
+		log.Fatalf("cannot get asset %v", err)
+	}
+
+	return assetId
 }
 
 func (cl *TapClient) GetBalance(assetId []byte) (uint64, int64) {
@@ -192,6 +262,47 @@ func (cl *TapClient) GetNextKeys() (asset.ScriptKey,
 	}
 
 	return *scriptKey, internalKey
+}
+
+func (cl *TapClient) Sync(rpcHost string) {
+	_, err := cl.universeclient.SyncUniverse(context.TODO(), &universerpc.SyncRequest{
+		UniverseHost: rpcHost,
+		SyncMode:     universerpc.UniverseSyncMode_SYNC_FULL,
+	})
+
+	if err != nil {
+		log.Fatalf("cannot sync %v", err)
+	}
+}
+
+func (cl *TapClient) IncomingMintEvent(assetName string, duration time.Duration) ([]byte, error) {
+	var assetId []byte
+	err := wait.NoError(func() error {
+		resp, err := cl.client.ListAssets(
+			context.TODO(), &taprpc.ListAssetRequest{
+				IncludeSpent:            false,
+				IncludeLeased:           false,
+				IncludeUnconfirmedMints: false,
+			},
+		)
+		if err != nil {
+			return err
+		}
+
+		if len(resp.Assets) == 0 {
+			return fmt.Errorf("no assets found")
+		}
+
+		for _, asset := range resp.Assets {
+			if asset.AssetGenesis.Name == assetName {
+				assetId = asset.AssetGenesis.AssetId
+				return nil
+			}
+		}
+		return fmt.Errorf("new assets not found")
+	}, 3*duration)
+
+	return assetId, err
 }
 
 func (cl *TapClient) IncomingTransferEvent(addr *taprpc.Addr, duration time.Duration) error {
@@ -476,7 +587,7 @@ func (cl *TapClient) partialSignBtcTransfer(pkt *psbt.Packet, length int,
 		}}
 		signInput := &pkt.Inputs[i]
 		derivation, trDerivation := tappsbt.Bip32DerivationFromKeyDesc(
-			keys[i], chaincfg.RegressionNetParams.HDCoinType,
+			keys[i], cl.chainParams.HDCoinType,
 		)
 		trDerivation.LeafHashes = [][]byte{fn.ByteSlice(tapLeaves[i].TapHash())}
 		signInput.Bip32Derivation = []*psbt.Bip32Derivation{derivation}
@@ -541,7 +652,7 @@ func (cl *TapClient) partialSignAssetTransfer(assetTransferPacket *tappsbt.VPack
 	derivation, trDerivation := tappsbt.Bip32DerivationFromKeyDesc(
 		keychain.KeyDescriptor{
 			PubKey: localScriptKeyDescriptor.PubKey,
-		}, chaincfg.RegressionNetParams.HDCoinType,
+		}, cl.chainParams.HDCoinType,
 	)
 	vIn.Bip32Derivation = []*psbt.Bip32Derivation{derivation}
 	vIn.TaprootBip32Derivation = []*psbt.TaprootBip32Derivation{

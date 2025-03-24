@@ -4,8 +4,12 @@ import (
 	"encoding/hex"
 	"log"
 	"os"
+	"path/filepath"
 	"taponark"
+	"time"
 
+	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/lightninglabs/taproot-assets/address"
 	"gopkg.in/yaml.v2"
 )
 
@@ -17,9 +21,46 @@ type App struct {
 	boardingTransferDetails *taponark.ArkBoardingTransfer
 	vtxoList                []taponark.VirtualTxOut
 	roundRootProofFile      []byte
+	assetId                 []byte
 }
 
-func Init() App {
+func DeriveLndTlsAndMacaroonHex(container string, network string) (string, string) {
+	tlsPath := filepath.Join("volumes", "lnd", container, "tls.cert")
+	tlsBytes, err := os.ReadFile(tlsPath)
+	if err != nil {
+		log.Fatalf("failed to read TLS certificate: %v", err)
+	}
+	tlsHex := hex.EncodeToString(tlsBytes)
+
+	// Read macaroon file
+	macaroonPath := filepath.Join("volumes", "lnd", container, "data", "chain", "bitcoin", network, "admin.macaroon")
+	macaroonBytes, err := os.ReadFile(macaroonPath)
+	if err != nil {
+		log.Fatalf("failed to read macaroon file: %v", err)
+	}
+	macaroonHex := hex.EncodeToString(macaroonBytes)
+	return tlsHex, macaroonHex
+}
+
+func DeriveTapTlsAndMacaroonHex(container string, network string) (string, string) {
+	tlsPath := filepath.Join("volumes", "tapd", container, "tls.cert")
+	tlsBytes, err := os.ReadFile(tlsPath)
+	if err != nil {
+		log.Fatalf("failed to read TLS certificate: %v", err)
+	}
+	tlsHex := hex.EncodeToString(tlsBytes)
+
+	// Read macaroon file
+	macaroonPath := filepath.Join("volumes", "tapd", container, "data", network, "admin.macaroon")
+	macaroonBytes, err := os.ReadFile(macaroonPath)
+	if err != nil {
+		log.Fatalf("failed to read macaroon file: %v", err)
+	}
+	macaroonHex := hex.EncodeToString(macaroonBytes)
+	return tlsHex, macaroonHex
+}
+
+func InitConfig() taponark.Config {
 	// Read the YAML configuration file
 	data, err := os.ReadFile("config.yaml")
 	if err != nil {
@@ -35,45 +76,85 @@ func Init() App {
 		log.Fatalf("error: %v", err)
 	}
 
-	boardingUserLndClient := taponark.InitLndClient(config.OnboardingUserLndClient)
-	boardingUserTapClient := taponark.InitTapClient(config.OnboardingUserTapClient, boardingUserLndClient)
+	return config
+}
 
-	exitUserLndClient := taponark.InitLndClient(config.ExitUserLndClient)
-	exitUserTapClient := taponark.InitTapClient(config.ExitUserTapClient, exitUserLndClient)
+func Init() App {
+	// Read the YAML configuration file
+	config := InitConfig()
 
-	serverLndClient := taponark.InitLndClient(config.ServerLndClient)
-	serverTapClient := taponark.InitTapClient(config.ServerTapClient, serverLndClient)
+	chainParams := chaincfg.RegressionNetParams
+	tapParams := address.RegressionNetTap
+	if config.Network == "signet" {
+		chainParams = chaincfg.SigNetParams
+		tapParams = address.SigNetTap
+	}
 
-	bitcoinClient := taponark.GetBitcoinClient(config.BitcoinClient)
+	// Init BoardingUser
+	boardingUserTapTlsHex, boardingUserTapMacaroonHex := DeriveTapTlsAndMacaroonHex(config.OnboardingUserTapClient.Container, config.Network)
+	boardingUserLndTlsHex, boardingUserLndMacaroonHex := DeriveLndTlsAndMacaroonHex(config.OnboardingUserLndClient.Container, config.Network)
+	boardingUserLndClient := taponark.InitLndClient(config.OnboardingUserLndClient, boardingUserLndTlsHex, boardingUserLndMacaroonHex)
+	boardingUserTapClient := taponark.InitTapClient(config.OnboardingUserTapClient, boardingUserLndClient, boardingUserTapTlsHex, boardingUserTapMacaroonHex, chainParams, tapParams)
+
+	// Init ExitUser
+	exitUserTapTlsHex, exitUserTapMacaroonHex := DeriveTapTlsAndMacaroonHex(config.ExitUserTapClient.Container, config.Network)
+	exitUserLndTlsHex, exitUserLndMacaroonHex := DeriveLndTlsAndMacaroonHex(config.ExitUserLndClient.Container, config.Network)
+	exitUserLndClient := taponark.InitLndClient(config.ExitUserLndClient, exitUserLndTlsHex, exitUserLndMacaroonHex)
+	exitUserTapClient := taponark.InitTapClient(config.ExitUserTapClient, exitUserLndClient, exitUserTapTlsHex, exitUserTapMacaroonHex, chainParams, tapParams)
+
+	// Init Server
+	serverTapTlsHex, serverTapMacaroonHex := DeriveTapTlsAndMacaroonHex(config.ServerTapClient.Container, config.Network)
+	serverLndTlsHex, serverLndMacaroonHex := DeriveLndTlsAndMacaroonHex(config.ServerLndClient.Container, config.Network)
+	serverLndClient := taponark.InitLndClient(config.ServerLndClient, serverLndTlsHex, serverLndMacaroonHex)
+	serverTapClient := taponark.InitTapClient(config.ServerTapClient, serverLndClient, serverTapTlsHex, serverTapMacaroonHex, chainParams, tapParams)
+
+	bitcoinClient := taponark.GetBitcoinClient(config.BitcoinClient, chainParams)
 
 	log.Println("All clients Initilised")
-	return App{serverTapClient, boardingUserTapClient, exitUserTapClient, bitcoinClient, nil, []taponark.VirtualTxOut{}, nil}
+	return App{serverTapClient, boardingUserTapClient, exitUserTapClient, bitcoinClient, nil, []taponark.VirtualTxOut{}, nil, nil}
+}
+
+// Onboarder Mint
+func (ap *App) Mint() {
+	assetId := ap.boardingUserTapClient.CreateAsset(time.Minute)
+	ap.serverTapClient.Sync("onboarduser-tap")
+	ap.exitUserTapClient.Sync("onboarduser-tap")
+
+	ap.assetId = assetId
+	hexEncodedString := hex.EncodeToString(assetId)
+	log.Printf("\nAsset ID: %s", hexEncodedString)
+	log.Println("-------------------------------------")
+}
+
+func (ap *App) FundOnboarding() {
+	// Fund the onboarding user
+	boardingUserAddr := ap.boardingUserTapClient.GetBtcAddress()
+
+	log.Printf("\nDeposit Address For Onboarding User : %s", boardingUserAddr)
+	log.Println("-------------------------------------")
 }
 
 func (ap *App) Board() {
-	assetId, _ := hex.DecodeString("43902e99a18ff431608ff47d871e3367d9a729c6d3e13358bbb653fc97f1df16")
 	boardingAssetAmnt := 40
 	boardingBtcAmnt := 100_000
 
 	// Onboard Asset and Btc
-	boardingTransferDetails := taponark.OnboardUser(assetId, uint64(boardingAssetAmnt), uint64(boardingBtcAmnt), &ap.boardingUserTapClient, &ap.serverTapClient, &ap.bitcoinClient)
+	boardingTransferDetails := taponark.OnboardUser(ap.assetId, uint64(boardingAssetAmnt), uint64(boardingBtcAmnt), &ap.boardingUserTapClient, &ap.serverTapClient, &ap.bitcoinClient)
 	ap.boardingTransferDetails = &boardingTransferDetails
 
 }
 
 func (ap *App) ConstructRound() {
 	roundTreeLevel := uint64(2)
-	assetId, _ := hex.DecodeString("43902e99a18ff431608ff47d871e3367d9a729c6d3e13358bbb653fc97f1df16")
 
-	vtxoList, roundRootProofFile := taponark.CreateRoundTransfer(*ap.boardingTransferDetails, assetId, &ap.exitUserTapClient, &ap.serverTapClient, roundTreeLevel, ap.bitcoinClient)
+	vtxoList, roundRootProofFile := taponark.CreateRoundTransfer(*ap.boardingTransferDetails, ap.assetId, &ap.exitUserTapClient, &ap.serverTapClient, roundTreeLevel, ap.bitcoinClient)
 
 	ap.vtxoList = vtxoList
 	ap.roundRootProofFile = roundRootProofFile
 }
 
 func (ap *App) UploadProofs() {
-	assetId, _ := hex.DecodeString("43902e99a18ff431608ff47d871e3367d9a729c6d3e13358bbb653fc97f1df16")
-	taponark.PublishTransfersAndSubmitProofs(assetId, ap.vtxoList, ap.boardingTransferDetails.AssetTransferDetails.GenesisPoint, ap.roundRootProofFile, &ap.exitUserTapClient, &ap.bitcoinClient)
+	taponark.PublishTransfersAndSubmitProofs(ap.assetId, ap.vtxoList, ap.boardingTransferDetails.AssetTransferDetails.GenesisPoint, ap.roundRootProofFile, &ap.exitUserTapClient, &ap.bitcoinClient)
 }
 
 func (ap *App) ShowVtxos() {
@@ -103,15 +184,14 @@ func (ap *App) ShowVtxos() {
 }
 
 func (ap *App) ShowBalance() {
-	assetId, _ := hex.DecodeString("43902e99a18ff431608ff47d871e3367d9a729c6d3e13358bbb653fc97f1df16")
 
-	boardingUserAssetBalance, boardingUserBtcBalance := ap.boardingUserTapClient.GetBalance(assetId)
+	boardingUserAssetBalance, boardingUserBtcBalance := ap.boardingUserTapClient.GetBalance(ap.assetId)
 	log.Println("------Boarding User-----")
 	log.Printf("Asset Balance = %d", boardingUserAssetBalance)
 	log.Printf("Btc Balance = %d", boardingUserBtcBalance)
 	log.Println("-------------------------------------")
 
-	exitUserAssetBalance, exitUserBtcBalance := ap.exitUserTapClient.GetBalance(assetId)
+	exitUserAssetBalance, exitUserBtcBalance := ap.exitUserTapClient.GetBalance(ap.assetId)
 	log.Println("-----Exit User------")
 	log.Printf("Asset Balance = %d", exitUserAssetBalance)
 	log.Printf("Btc Balance = %d", exitUserBtcBalance)

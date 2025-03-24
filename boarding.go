@@ -9,7 +9,6 @@ import (
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/taproot-assets/address"
 	"github.com/lightninglabs/taproot-assets/asset"
 	"github.com/lightninglabs/taproot-assets/commitment"
 	"github.com/lightninglabs/taproot-assets/tappsbt"
@@ -104,7 +103,7 @@ func ConstructRoundIOFromBoarding(assetId []byte, boardingTransfer ArkBoardingTr
 			PubKey: asset.NUMSPubKey,
 		},
 		asset.V0,
-		&address.RegressionNetTap)
+		&server.tapParams)
 
 	// Encode Taproot Sibling
 	scriptBranchPreimage := commitment.NewPreimageFromBranch(nextSpendingDetails.arkBtcScript.Branch)

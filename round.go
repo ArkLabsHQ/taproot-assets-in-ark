@@ -9,7 +9,6 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
-	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/lightninglabs/taproot-assets/address"
 	"github.com/lightninglabs/taproot-assets/asset"
 	"github.com/lightninglabs/taproot-assets/commitment"
@@ -58,7 +57,7 @@ func createIntermediateChainTransfer(assetId []byte, inputSpendingDetails ArkSpe
 	fundedPkt := tappsbt.ForInteractiveSend(asset.ID(assetId), branchAssetAmount, leftOutputSpendingDetails.arkAssetScript.tapScriptKey, 0, 0, 0,
 		keychain.KeyDescriptor{
 			PubKey: asset.NUMSPubKey,
-		}, asset.V0, &address.RegressionNetTap)
+		}, asset.V0, &server.tapParams)
 
 	fundedPkt.Outputs[0].Type = tappsbt.TypeSplitRoot
 	leftBranchScriptBranchPreimage := commitment.NewPreimageFromBranch(leftOutputSpendingDetails.arkBtcScript.Branch)
@@ -154,7 +153,7 @@ func createFinalChainTransfer(assetId []byte, inputSpendingDetails ArkSpendingDe
 		log.Fatalf("cannot get asset left address %v", err)
 	}
 
-	asset_addr, err := address.DecodeAddress(asset_addr_resp.Encoded, &address.RegressionNetTap)
+	asset_addr, err := address.DecodeAddress(asset_addr_resp.Encoded, &server.tapParams)
 	if err != nil {
 		log.Fatalf("cannot decode address %v", err)
 	}
@@ -168,7 +167,7 @@ func createFinalChainTransfer(assetId []byte, inputSpendingDetails ArkSpendingDe
 		log.Fatalf("cannot get btc right address %v", err)
 	}
 
-	btc_addr, err := btcutil.DecodeAddress(btc_addr_resp.Addr, &chaincfg.RegressionNetParams)
+	btc_addr, err := btcutil.DecodeAddress(btc_addr_resp.Addr, &server.chainParams)
 	if err != nil {
 		log.Fatalf("cannot decode address %v", err)
 	}

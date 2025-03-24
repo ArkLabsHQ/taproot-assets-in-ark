@@ -62,7 +62,7 @@ func PublishTransfersAndSubmitProofs(assetId []byte, vtxoList []VirtualTxOut, ge
 	log.Println("Exit Proof appended")
 
 	for _, updatedProof := range updatedProofList {
-		_, err := user.universeclient.ImportProof(context.TODO(), &tapdevrpc.ImportProofRequest{
+		_, err := user.devclient.ImportProof(context.TODO(), &tapdevrpc.ImportProofRequest{
 			ProofFile:    updatedProof,
 			GenesisPoint: genesisPoint,
 		})

@@ -5,6 +5,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/rpcclient"
 	"github.com/btcsuite/btcd/wire"
@@ -17,10 +18,11 @@ type BitcoinSendTxResult struct {
 }
 
 type BitcoinClient struct {
-	client *rpcclient.Client
+	client      *rpcclient.Client
+	chainParams chaincfg.Params
 }
 
-func GetBitcoinClient(config BitcoinClientConfig) BitcoinClient {
+func GetBitcoinClient(config BitcoinClientConfig, chainParams chaincfg.Params) BitcoinClient {
 	hostPort := config.Host + ":" + config.Port
 
 	connCfg := &rpcclient.ConnConfig{
@@ -36,7 +38,7 @@ func GetBitcoinClient(config BitcoinClientConfig) BitcoinClient {
 	if err != nil {
 		log.Fatalf("Error creating new RPC client: %v", err)
 	}
-	return BitcoinClient{client}
+	return BitcoinClient{client, chainParams}
 
 }
 
@@ -101,3 +103,20 @@ func (b BitcoinClient) SendTransaction(transaction *wire.MsgTx, timeout time.Dur
 
 	return bitcoinSendResult
 }
+
+// func (b BitcoinClient) SendToAddress(amount int64, address string) *chainhash.Hash {
+// 	formattedAddress, err := btcutil.DecodeAddress(address, &b.chainParams)
+// 	if err != nil {
+// 		log.Fatalf("cannot decode address")
+// 	}
+
+// 	formattedAmount := btcutil.Amount(amount)
+
+// 	hash, err := b.client.SendToAddress(formattedAddress, formattedAmount)
+// 	if err != nil {
+// 		log.Fatalf("cannot send btc to address %v", err)
+// 	}
+
+// 	return hash
+
+// }

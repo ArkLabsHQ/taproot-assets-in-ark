@@ -58,6 +58,14 @@ func processInput(input string, app *App) {
 		app.ShowVtxos()
 	case "balance":
 		app.ShowBalance()
+	case "mint":
+		app.Mint()
+		log.Println("Minting Complete")
+		log.Println("------------------------------------------------")
+	case "deposit":
+		app.FundOnboarding()
+		log.Println("Deposit Address Gotten")
+		log.Println("------------------------------------------------")
 
 	default:
 		log.Println("unknown command")
