@@ -60,10 +60,10 @@ func (b BitcoinClient) WaitForConfirmation(txhash chainhash.Hash) error {
 	return err
 }
 
-func (b BitcoinClient) SendTransaction(transaction *wire.MsgTx) BitcoinSendTxResult {
+func (b BitcoinClient) SendTransaction(transaction *wire.MsgTx) (BitcoinSendTxResult, error) {
 	txhash, err := b.client.SendRawTransaction(transaction, true)
 	if err != nil {
-		log.Fatalf("cannot send raw transaction %v", err)
+		return BitcoinSendTxResult{}, fmt.Errorf("cannot send raw transaction %v", err)
 	}
 
 	log.Println("awaiting confirmation")
@@ -100,25 +100,8 @@ func (b BitcoinClient) SendTransaction(transaction *wire.MsgTx) BitcoinSendTxRes
 	}, b.timeout)
 
 	if err != nil {
-		log.Fatalf("Error In Sending Transaction %v", err)
+		return BitcoinSendTxResult{}, fmt.Errorf("Error In Sending Transaction %v", err)
 	}
 
-	return bitcoinSendResult
+	return bitcoinSendResult, nil
 }
-
-// func (b BitcoinClient) SendToAddress(amount int64, address string) *chainhash.Hash {
-// 	formattedAddress, err := btcutil.DecodeAddress(address, &b.chainParams)
-// 	if err != nil {
-// 		log.Fatalf("cannot decode address")
-// 	}
-
-// 	formattedAmount := btcutil.Amount(amount)
-
-// 	hash, err := b.client.SendToAddress(formattedAddress, formattedAmount)
-// 	if err != nil {
-// 		log.Fatalf("cannot send btc to address %v", err)
-// 	}
-
-// 	return hash
-
-// }

@@ -3,7 +3,7 @@ package taponark
 import (
 	"bytes"
 	"context"
-	"log"
+	"fmt"
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/txscript"
@@ -17,19 +17,23 @@ import (
 
 // user tap client
 
-func OnboardUser(assetId []byte, asset_amnt uint64, btc_amnt uint64, boardingClient, serverTapClient *TapClient, bitcoinClient *BitcoinClient) ArkBoardingTransfer {
+func OnboardUser(assetId []byte, asset_amnt uint64, btc_amnt uint64, boardingClient, serverTapClient *TapClient, bitcoinClient *BitcoinClient) (ArkBoardingTransfer, error) {
 
 	/// 1. Send Asset From  Boarding User To Boarding Address
-	assetSpendingDetails := CreateBoardingSpendingDetails(boardingClient, serverTapClient)
+	assetSpendingDetails, err := CreateBoardingSpendingDetails(boardingClient, serverTapClient)
+	if err != nil {
+		return ArkBoardingTransfer{}, fmt.Errorf("cannot create Boarding Spending Details %v", err)
+	}
+
 	addr_resp, err := serverTapClient.GetNewAddress(assetSpendingDetails.arkBtcScript.Branch, assetSpendingDetails.arkAssetScript.tapScriptKey, assetId, asset_amnt)
 	if err != nil {
-		log.Fatalf("cannot get address %v", err)
+		return ArkBoardingTransfer{}, fmt.Errorf("cannot get address %v", err)
 	}
 
 	// sent asset to onboarding address
 	sendResp, err := boardingClient.SendAsset(addr_resp)
 	if err != nil {
-		log.Fatalf("cannot send to address %v", err)
+		return ArkBoardingTransfer{}, fmt.Errorf("cannot send asset %v", err)
 	}
 
 	// Insert Control Block
@@ -40,18 +44,25 @@ func OnboardUser(assetId []byte, asset_amnt uint64, btc_amnt uint64, boardingCli
 
 	/// 2. Send BTC From Boarding User To Boarding Address
 	zeroHash := taprootAssetRoot
-	btcSpendingDetails := CreateBoardingSpendingDetails(boardingClient, serverTapClient)
+	btcSpendingDetails, err := CreateBoardingSpendingDetails(boardingClient, serverTapClient)
+	if err != nil {
+		return ArkBoardingTransfer{}, fmt.Errorf("cannot create boarding spending details %v", err)
+	}
+
 	btcControlBlock := extractControlBlock(btcSpendingDetails.arkBtcScript, zeroHash)
 	btcSpendingDetails.arkBtcScript.controlBlock = btcControlBlock
 	rootHash := btcControlBlock.RootHash(btcSpendingDetails.arkBtcScript.cooperativeSpend.Script)
 	outputKey := txscript.ComputeTaprootOutputKey(asset.NUMSPubKey, rootHash)
 	pkScript, err := txscript.PayToTaprootScript(outputKey)
 	if err != nil {
-		log.Fatalf("cannot create Pay To Taproot Script")
+		return ArkBoardingTransfer{}, fmt.Errorf("cannot create Pay To Taproot Script", err)
 	}
 
 	//send Btc to onboarding Input
-	msgTx := boardingClient.lndClient.SendOutput(int64(btc_amnt), pkScript)
+	msgTx, err := boardingClient.lndClient.SendOutput(int64(btc_amnt), pkScript)
+	if err != nil {
+		return ArkBoardingTransfer{}, fmt.Errorf("cannot send btc to output %v", err)
+	}
 
 	var txout *wire.TxOut
 	var transferOutpoint *wire.OutPoint
@@ -67,7 +78,7 @@ func OnboardUser(assetId []byte, asset_amnt uint64, btc_amnt uint64, boardingCli
 	}
 
 	if txout == nil || transferOutpoint == nil {
-		log.Fatalf("Transfer Cannot be made")
+		return ArkBoardingTransfer{}, fmt.Errorf("Transfer Cannot be made")
 	}
 
 	btcTransferDetails := BtcTransferDetails{
@@ -78,15 +89,19 @@ func OnboardUser(assetId []byte, asset_amnt uint64, btc_amnt uint64, boardingCli
 	waitForTransfers(bitcoinClient, serverTapClient, msgTx.TxHash(), addr_resp)
 
 	// Derive Onboard Proof
-	assetTransferProof := serverTapClient.ExportProof(assetId,
+	assetTransferProof, err := serverTapClient.ExportProof(assetId,
 		assetTransferOutput.ScriptKey,
 	)
+	if err != nil {
+		return ArkBoardingTransfer{}, fmt.Errorf("cannot export boarding proof %v", err)
+	}
+
 	assetTransferDetails := AssetTransferDetails{assetTransferOutput, assetSpendingDetails, asset_amnt, assetTransferProof}
 
-	return ArkBoardingTransfer{assetTransferDetails, btcTransferDetails, boardingClient}
+	return ArkBoardingTransfer{assetTransferDetails, btcTransferDetails, boardingClient}, nil
 }
 
-func ConstructRoundIOFromBoarding(assetId []byte, boardingTransfer ArkBoardingTransfer, nextSpendingDetails ArkSpendingDetails, server *TapClient) ChainTransfer {
+func ConstructRoundIOFromBoarding(assetId []byte, boardingTransfer ArkBoardingTransfer, nextSpendingDetails ArkSpendingDetails, server *TapClient) (ChainTransfer, error) {
 	//
 	/// 1. Create Asset Transfer
 	assetAmount := boardingTransfer.AssetTransferDetails.assetBoardingAmount
@@ -114,7 +129,7 @@ func ConstructRoundIOFromBoarding(assetId []byte, boardingTransfer ArkBoardingTr
 	// Add output details
 	err := tapsend.PrepareOutputAssets(context.TODO(), fundedPkt)
 	if err != nil {
-		log.Fatalf("cannot prepare Output %v", err)
+		return ChainTransfer{}, fmt.Errorf("cannot prepare Output %v", err)
 	}
 
 	// Insert asset witness details
@@ -126,7 +141,7 @@ func ConstructRoundIOFromBoarding(assetId []byte, boardingTransfer ArkBoardingTr
 	btcAmount := boardingTransfer.btcTransferDetails.btcBoardingAmount + DUMMY_ASSET_BTC_AMOUNT - FEE
 	transferBtcPkt, err := tapsend.PrepareAnchoringTemplate(vPackets)
 	if err != nil {
-		log.Fatal(err)
+		return ChainTransfer{}, fmt.Errorf("cannot prepare TransferBtc Packet %v", err)
 	}
 
 	// Update the BTC Output with the correct output
@@ -146,22 +161,24 @@ func ConstructRoundIOFromBoarding(assetId []byte, boardingTransfer ArkBoardingTr
 	spendingDetailsLists[1] = boardingTransfer.btcTransferDetails.arkSpendingDetails
 
 	// Sign BTC inputs and generate witness lists
-	btcAssetTxWitnessList := CreateBtcWitness(spendingDetailsLists, transferBtcPkt, inputLength, boardingTransfer.user, server)
+	btcAssetTxWitnessList, err := CreateBtcWitness(spendingDetailsLists, transferBtcPkt, inputLength, boardingTransfer.user, server)
+	if err != nil {
+		return ChainTransfer{}, fmt.Errorf("cannot Create BTC Witness %v", err)
+	}
 
 	for i := 0; i < inputLength; i++ {
 		var buf bytes.Buffer
 		err = psbt.WriteTxWitness(&buf, btcAssetTxWitnessList[i])
 		if err != nil {
-			log.Fatalf("failed to write BTC witness for input %v", err)
+			return ChainTransfer{}, fmt.Errorf("failed to write BTC witness for input %v", err)
 		}
 		transferBtcPkt.Inputs[i].FinalScriptWitness = buf.Bytes()
 	}
 
 	// Finalise PSBT
 	if err = psbt.MaybeFinalizeAll(transferBtcPkt); err != nil {
-		log.Fatalf("failed to finaliste Psbt %v", err)
+		return ChainTransfer{}, fmt.Errorf("failed to finaliste Psbt %v", err)
 	}
 
-	unpublishedRoundRootTransfer := DeriveUnpublishedChainTransfer(transferBtcPkt, vPackets[0].Outputs[0])
-	return unpublishedRoundRootTransfer
+	return DeriveUnpublishedChainTransfer(transferBtcPkt, vPackets[0].Outputs[0])
 }

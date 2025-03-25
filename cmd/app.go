@@ -123,9 +123,25 @@ func Init(network string) App {
 
 // Onboarder Mint
 func (ap *App) Mint() {
-	assetId := ap.boardingUserTapClient.CreateAsset()
-	ap.serverTapClient.Sync("onboarduser-tap")
-	ap.exitUserTapClient.Sync("onboarduser-tap")
+	assetId, err := ap.boardingUserTapClient.CreateAsset()
+	if err != nil {
+		log.Printf("Error creating asset: %v", err)
+		log.Println("-------------------------------------")
+		return
+	}
+	err = ap.serverTapClient.Sync("onboarduser-tap")
+	if err != nil {
+		log.Printf("Error Sycing Server: %v", err)
+		log.Println("-------------------------------------")
+		return
+	}
+
+	err = ap.exitUserTapClient.Sync("onboarduser-tap")
+	if err != nil {
+		log.Printf("Error Sycing Exit User: %v", err)
+		log.Println("-------------------------------------")
+		return
+	}
 
 	ap.assetId = assetId
 	hexEncodedString := hex.EncodeToString(assetId)
@@ -135,7 +151,12 @@ func (ap *App) Mint() {
 
 func (ap *App) FundOnboarding() {
 	// Fund the onboarding user
-	boardingUserAddr := ap.boardingUserTapClient.GetBtcAddress()
+	boardingUserAddr, err := ap.boardingUserTapClient.GetBtcAddress()
+	if err != nil {
+		log.Printf("Error getting deposit address: %v", err)
+		log.Println("-------------------------------------")
+		return
+	}
 
 	log.Printf("\nDeposit Address For Onboarding User : %s", boardingUserAddr)
 	log.Println("-------------------------------------")
@@ -146,7 +167,12 @@ func (ap *App) Board() {
 	boardingBtcAmnt := 100_000
 
 	// Onboard Asset and Btc
-	boardingTransferDetails := taponark.OnboardUser(ap.assetId, uint64(boardingAssetAmnt), uint64(boardingBtcAmnt), &ap.boardingUserTapClient, &ap.serverTapClient, &ap.bitcoinClient)
+	boardingTransferDetails, err := taponark.OnboardUser(ap.assetId, uint64(boardingAssetAmnt), uint64(boardingBtcAmnt), &ap.boardingUserTapClient, &ap.serverTapClient, &ap.bitcoinClient)
+	if err != nil {
+		log.Printf("Error onboarding user: %v", err)
+		log.Println("-------------------------------------")
+		return
+	}
 	ap.boardingTransferDetails = &boardingTransferDetails
 
 }
@@ -154,14 +180,24 @@ func (ap *App) Board() {
 func (ap *App) ConstructRound() {
 	roundTreeLevel := uint64(2)
 
-	vtxoList, roundRootProofFile := taponark.CreateRoundTransfer(*ap.boardingTransferDetails, ap.assetId, &ap.exitUserTapClient, &ap.serverTapClient, roundTreeLevel, ap.bitcoinClient)
+	vtxoList, roundRootProofFile, err := taponark.CreateRoundTransfer(*ap.boardingTransferDetails, ap.assetId, &ap.exitUserTapClient, &ap.serverTapClient, roundTreeLevel, ap.bitcoinClient)
+	if err != nil {
+		log.Printf("Error creating round transfer: %v", err)
+		log.Println("-------------------------------------")
+		return
+	}
 
 	ap.vtxoList = vtxoList
 	ap.roundRootProofFile = roundRootProofFile
 }
 
 func (ap *App) UploadProofs() {
-	taponark.PublishTransfersAndSubmitProofs(ap.assetId, ap.vtxoList, ap.boardingTransferDetails.AssetTransferDetails.GenesisPoint, ap.roundRootProofFile, &ap.exitUserTapClient, &ap.bitcoinClient)
+	err := taponark.PublishTransfersAndSubmitProofs(ap.assetId, ap.vtxoList, ap.boardingTransferDetails.AssetTransferDetails.GenesisPoint, ap.roundRootProofFile, &ap.exitUserTapClient, &ap.bitcoinClient)
+	if err != nil {
+		log.Printf("Error uploading proofs: %v", err)
+		log.Println("-------------------------------------")
+		return
+	}
 }
 
 func (ap *App) ShowVtxos() {
@@ -192,13 +228,25 @@ func (ap *App) ShowVtxos() {
 
 func (ap *App) ShowBalance() {
 
-	boardingUserAssetBalance, boardingUserBtcBalance := ap.boardingUserTapClient.GetBalance(ap.assetId)
+	boardingUserAssetBalance, boardingUserBtcBalance, err := ap.boardingUserTapClient.GetBalance(ap.assetId)
+	if err != nil {
+		log.Printf("Error getting balance: %v", err)
+		log.Println("-------------------------------------")
+		return
+	}
+
 	log.Println("------Boarding User-----")
 	log.Printf("Asset Balance = %d", boardingUserAssetBalance)
 	log.Printf("Btc Balance = %d", boardingUserBtcBalance)
 	log.Println("-------------------------------------")
 
-	exitUserAssetBalance, exitUserBtcBalance := ap.exitUserTapClient.GetBalance(ap.assetId)
+	exitUserAssetBalance, exitUserBtcBalance, err := ap.exitUserTapClient.GetBalance(ap.assetId)
+	if err != nil {
+		log.Printf("Error getting balance: %v", err)
+		log.Println("-------------------------------------")
+		return
+	}
+
 	log.Println("-----Exit User------")
 	log.Printf("Asset Balance = %d", exitUserAssetBalance)
 	log.Printf("Btc Balance = %d", exitUserBtcBalance)

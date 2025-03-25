@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"log"
 	"sync"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -30,7 +29,7 @@ const DUMMY_ASSET_BTC_AMOUNT = 1_000
 const ROUND_ROOT_ANCHOR_OUTPUT_INDEX = 0
 const ROUND_ROOT_ASSET_OUTPUT_INDEX = 0
 
-func DeriveUnpublishedChainTransfer(btcPacket *psbt.Packet, transferOutput *tappsbt.VOutput) ChainTransfer {
+func DeriveUnpublishedChainTransfer(btcPacket *psbt.Packet, transferOutput *tappsbt.VOutput) (ChainTransfer, error) {
 	internalKey := transferOutput.AnchorOutputInternalKey
 	scriptKey := transferOutput.ScriptKey
 	merkleRoot := tappsbt.ExtractCustomField(
@@ -41,12 +40,12 @@ func DeriveUnpublishedChainTransfer(btcPacket *psbt.Packet, transferOutput *tapp
 	)
 	taprootSibling, _, err := commitment.MaybeEncodeTapscriptPreimage(transferOutput.AnchorOutputTapscriptSibling)
 	if err != nil {
-		log.Fatalf("cannot encode tapscript preimage %v", err)
+		return ChainTransfer{}, fmt.Errorf("cannot encode tapscript preimage %v", err)
 	}
 
 	finalTx, err := psbt.Extract(btcPacket)
 	if err != nil {
-		log.Fatalf("cannot extract final transaction %v", err)
+		return ChainTransfer{}, fmt.Errorf("cannot extract final transaction %v", err)
 	}
 	txhash := transferOutput.ProofSuffix.AnchorTx.TxHash()
 
@@ -55,7 +54,7 @@ func DeriveUnpublishedChainTransfer(btcPacket *psbt.Packet, transferOutput *tapp
 	anchorValue := btcPacket.UnsignedTx.TxOut[transferOutput.AnchorOutputIndex].Value
 	assetAmount := transferOutput.Amount
 
-	return ChainTransfer{finalTx, outpoint, transferOutput.ProofSuffix, merkleRoot, taprootSibling, internalKey, scriptKey, anchorValue, taprootAssetRoot, assetAmount}
+	return ChainTransfer{finalTx, outpoint, transferOutput.ProofSuffix, merkleRoot, taprootSibling, internalKey, scriptKey, anchorValue, taprootAssetRoot, assetAmount}, nil
 
 }
 
@@ -101,14 +100,14 @@ func addBtcInputToPSBT(transferPacket *psbt.Packet, btcTransferDetails BtcTransf
 
 }
 
-func addBtcOutput(transferPacket *psbt.Packet, amount uint64, internalKey *btcec.PublicKey) {
+func addBtcOutput(transferPacket *psbt.Packet, amount uint64, internalKey *btcec.PublicKey) error {
 
 	taprootKey := txscript.ComputeTaprootOutputKey(internalKey, []byte{})
 
 	pkscript, err := txscript.PayToTaprootScript(taprootKey)
 
 	if err != nil {
-		log.Fatalf("cannot convert address to script %v", err)
+		return fmt.Errorf("cannot convert address to script %v", err)
 	}
 
 	txout := wire.TxOut{
@@ -125,6 +124,7 @@ func addBtcOutput(transferPacket *psbt.Packet, amount uint64, internalKey *btcec
 		TaprootTapTree:     nil,
 	})
 
+	return nil
 }
 
 // waitForTransfers concurrently waits for both the BTC confirmation and the asset transfer event.

@@ -43,7 +43,7 @@ func InitLndClient(config LndClientConfig, tlsCert, adminMacaroon string) LndCli
 
 }
 
-func (lc *LndClient) SendOutput(value int64, pkscript []byte) wire.MsgTx {
+func (lc *LndClient) SendOutput(value int64, pkscript []byte) (wire.MsgTx, error) {
 	response, err := lc.wallet.SendOutputs(context.TODO(), &walletrpc.SendOutputsRequest{
 		SatPerKw: 2000,
 		Outputs: []*signrpc.TxOut{
@@ -57,15 +57,15 @@ func (lc *LndClient) SendOutput(value int64, pkscript []byte) wire.MsgTx {
 		CoinSelectionStrategy: lnrpc.CoinSelectionStrategy_STRATEGY_USE_GLOBAL_CONFIG,
 	})
 	if err != nil {
-		log.Fatalf("cannot send btc to address %v", err)
+		return wire.MsgTx{}, fmt.Errorf("cannot send btc to address %v", err)
 	}
 	// Deserialize the raw transaction bytes into the transaction.
 	msgTx := wire.NewMsgTx(wire.TxVersion)
 	if err := msgTx.Deserialize(bytes.NewReader(response.RawTx)); err != nil {
-		log.Fatalf("failed to deserialize transaction: %v", err)
+		return wire.MsgTx{}, fmt.Errorf("failed to deserialize transaction: %v", err)
 	}
 
-	return *msgTx
+	return *msgTx, nil
 }
 
 func NewBasicLndConn(lndHost string, lndRpcPort, tlsPath, macPath string) (*grpc.ClientConn, error) {
