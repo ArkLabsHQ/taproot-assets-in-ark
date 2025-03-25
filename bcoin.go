@@ -20,9 +20,10 @@ type BitcoinSendTxResult struct {
 type BitcoinClient struct {
 	client      *rpcclient.Client
 	chainParams chaincfg.Params
+	timeout     time.Duration
 }
 
-func GetBitcoinClient(config BitcoinClientConfig, chainParams chaincfg.Params) BitcoinClient {
+func GetBitcoinClient(config BitcoinClientConfig, chainParams chaincfg.Params, timeout time.Duration) BitcoinClient {
 	hostPort := config.Host + ":" + config.Port
 
 	connCfg := &rpcclient.ConnConfig{
@@ -38,11 +39,12 @@ func GetBitcoinClient(config BitcoinClientConfig, chainParams chaincfg.Params) B
 	if err != nil {
 		log.Fatalf("Error creating new RPC client: %v", err)
 	}
-	return BitcoinClient{client, chainParams}
+
+	return BitcoinClient{client, chainParams, timeout}
 
 }
 
-func (b BitcoinClient) WaitForConfirmation(txhash chainhash.Hash, timeout time.Duration) error {
+func (b BitcoinClient) WaitForConfirmation(txhash chainhash.Hash) error {
 	log.Println("awaiting block to be mined")
 	err := wait.NoError(func() error {
 		txInfo, err := b.client.GetRawTransactionVerbose(&txhash)
@@ -53,12 +55,12 @@ func (b BitcoinClient) WaitForConfirmation(txhash chainhash.Hash, timeout time.D
 			return fmt.Errorf("transaction not confirmed with hash %s", txhash.String())
 		}
 		return nil
-	}, timeout)
+	}, b.timeout)
 
 	return err
 }
 
-func (b BitcoinClient) SendTransaction(transaction *wire.MsgTx, timeout time.Duration) BitcoinSendTxResult {
+func (b BitcoinClient) SendTransaction(transaction *wire.MsgTx) BitcoinSendTxResult {
 	txhash, err := b.client.SendRawTransaction(transaction, true)
 	if err != nil {
 		log.Fatalf("cannot send raw transaction %v", err)
@@ -95,7 +97,7 @@ func (b BitcoinClient) SendTransaction(transaction *wire.MsgTx, timeout time.Dur
 
 		bitcoinSendResult = BitcoinSendTxResult{block, blockheight}
 		return nil
-	}, timeout)
+	}, b.timeout)
 
 	if err != nil {
 		log.Fatalf("Error In Sending Transaction %v", err)

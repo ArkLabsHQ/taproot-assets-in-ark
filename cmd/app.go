@@ -25,7 +25,7 @@ type App struct {
 }
 
 func DeriveLndTlsAndMacaroonHex(container string, network string) (string, string) {
-	tlsPath := filepath.Join("volumes", "lnd", container, "tls.cert")
+	tlsPath := filepath.Join("data", network, "volumes", "lnd", container, "tls.cert")
 	tlsBytes, err := os.ReadFile(tlsPath)
 	if err != nil {
 		log.Fatalf("failed to read TLS certificate: %v", err)
@@ -33,7 +33,7 @@ func DeriveLndTlsAndMacaroonHex(container string, network string) (string, strin
 	tlsHex := hex.EncodeToString(tlsBytes)
 
 	// Read macaroon file
-	macaroonPath := filepath.Join("volumes", "lnd", container, "data", "chain", "bitcoin", network, "admin.macaroon")
+	macaroonPath := filepath.Join("data", network, "volumes", "lnd", container, "data", "chain", "bitcoin", network, "admin.macaroon")
 	macaroonBytes, err := os.ReadFile(macaroonPath)
 	if err != nil {
 		log.Fatalf("failed to read macaroon file: %v", err)
@@ -43,7 +43,7 @@ func DeriveLndTlsAndMacaroonHex(container string, network string) (string, strin
 }
 
 func DeriveTapTlsAndMacaroonHex(container string, network string) (string, string) {
-	tlsPath := filepath.Join("volumes", "tapd", container, "tls.cert")
+	tlsPath := filepath.Join("data", network, "volumes", "tapd", container, "tls.cert")
 	tlsBytes, err := os.ReadFile(tlsPath)
 	if err != nil {
 		log.Fatalf("failed to read TLS certificate: %v", err)
@@ -51,7 +51,7 @@ func DeriveTapTlsAndMacaroonHex(container string, network string) (string, strin
 	tlsHex := hex.EncodeToString(tlsBytes)
 
 	// Read macaroon file
-	macaroonPath := filepath.Join("volumes", "tapd", container, "data", network, "admin.macaroon")
+	macaroonPath := filepath.Join("data", network, "volumes", "tapd", container, "data", network, "admin.macaroon")
 	macaroonBytes, err := os.ReadFile(macaroonPath)
 	if err != nil {
 		log.Fatalf("failed to read macaroon file: %v", err)
@@ -60,9 +60,14 @@ func DeriveTapTlsAndMacaroonHex(container string, network string) (string, strin
 	return tlsHex, macaroonHex
 }
 
-func InitConfig() taponark.Config {
+func InitConfig(network string) taponark.Config {
 	// Read the YAML configuration file
-	data, err := os.ReadFile("config.yaml")
+	configFile := "config.yaml"
+
+	if network == "signet" {
+		configFile = "config-signet.yaml"
+	}
+	data, err := os.ReadFile(configFile)
 	if err != nil {
 		log.Fatalf("error: %v", err)
 	}
@@ -79,36 +84,38 @@ func InitConfig() taponark.Config {
 	return config
 }
 
-func Init() App {
+func Init(network string) App {
 	// Read the YAML configuration file
-	config := InitConfig()
+	config := InitConfig(network)
 
 	chainParams := chaincfg.RegressionNetParams
 	tapParams := address.RegressionNetTap
-	if config.Network == "signet" {
+	if network == "signet" {
 		chainParams = chaincfg.SigNetParams
 		tapParams = address.SigNetTap
 	}
 
+	timeout := time.Duration(config.Timeout) * time.Minute
+
 	// Init BoardingUser
-	boardingUserTapTlsHex, boardingUserTapMacaroonHex := DeriveTapTlsAndMacaroonHex(config.OnboardingUserTapClient.Container, config.Network)
-	boardingUserLndTlsHex, boardingUserLndMacaroonHex := DeriveLndTlsAndMacaroonHex(config.OnboardingUserLndClient.Container, config.Network)
+	boardingUserTapTlsHex, boardingUserTapMacaroonHex := DeriveTapTlsAndMacaroonHex(config.OnboardingUserTapClient.Container, network)
+	boardingUserLndTlsHex, boardingUserLndMacaroonHex := DeriveLndTlsAndMacaroonHex(config.OnboardingUserLndClient.Container, network)
 	boardingUserLndClient := taponark.InitLndClient(config.OnboardingUserLndClient, boardingUserLndTlsHex, boardingUserLndMacaroonHex)
-	boardingUserTapClient := taponark.InitTapClient(config.OnboardingUserTapClient, boardingUserLndClient, boardingUserTapTlsHex, boardingUserTapMacaroonHex, chainParams, tapParams)
+	boardingUserTapClient := taponark.InitTapClient(config.OnboardingUserTapClient, boardingUserLndClient, boardingUserTapTlsHex, boardingUserTapMacaroonHex, chainParams, tapParams, timeout)
 
 	// Init ExitUser
-	exitUserTapTlsHex, exitUserTapMacaroonHex := DeriveTapTlsAndMacaroonHex(config.ExitUserTapClient.Container, config.Network)
-	exitUserLndTlsHex, exitUserLndMacaroonHex := DeriveLndTlsAndMacaroonHex(config.ExitUserLndClient.Container, config.Network)
+	exitUserTapTlsHex, exitUserTapMacaroonHex := DeriveTapTlsAndMacaroonHex(config.ExitUserTapClient.Container, network)
+	exitUserLndTlsHex, exitUserLndMacaroonHex := DeriveLndTlsAndMacaroonHex(config.ExitUserLndClient.Container, network)
 	exitUserLndClient := taponark.InitLndClient(config.ExitUserLndClient, exitUserLndTlsHex, exitUserLndMacaroonHex)
-	exitUserTapClient := taponark.InitTapClient(config.ExitUserTapClient, exitUserLndClient, exitUserTapTlsHex, exitUserTapMacaroonHex, chainParams, tapParams)
+	exitUserTapClient := taponark.InitTapClient(config.ExitUserTapClient, exitUserLndClient, exitUserTapTlsHex, exitUserTapMacaroonHex, chainParams, tapParams, timeout)
 
 	// Init Server
-	serverTapTlsHex, serverTapMacaroonHex := DeriveTapTlsAndMacaroonHex(config.ServerTapClient.Container, config.Network)
-	serverLndTlsHex, serverLndMacaroonHex := DeriveLndTlsAndMacaroonHex(config.ServerLndClient.Container, config.Network)
+	serverTapTlsHex, serverTapMacaroonHex := DeriveTapTlsAndMacaroonHex(config.ServerTapClient.Container, network)
+	serverLndTlsHex, serverLndMacaroonHex := DeriveLndTlsAndMacaroonHex(config.ServerLndClient.Container, network)
 	serverLndClient := taponark.InitLndClient(config.ServerLndClient, serverLndTlsHex, serverLndMacaroonHex)
-	serverTapClient := taponark.InitTapClient(config.ServerTapClient, serverLndClient, serverTapTlsHex, serverTapMacaroonHex, chainParams, tapParams)
+	serverTapClient := taponark.InitTapClient(config.ServerTapClient, serverLndClient, serverTapTlsHex, serverTapMacaroonHex, chainParams, tapParams, timeout)
 
-	bitcoinClient := taponark.GetBitcoinClient(config.BitcoinClient, chainParams)
+	bitcoinClient := taponark.GetBitcoinClient(config.BitcoinClient, chainParams, timeout)
 
 	log.Println("All clients Initilised")
 	return App{serverTapClient, boardingUserTapClient, exitUserTapClient, bitcoinClient, nil, []taponark.VirtualTxOut{}, nil, nil}
@@ -116,7 +123,7 @@ func Init() App {
 
 // Onboarder Mint
 func (ap *App) Mint() {
-	assetId := ap.boardingUserTapClient.CreateAsset(time.Minute)
+	assetId := ap.boardingUserTapClient.CreateAsset()
 	ap.serverTapClient.Sync("onboarduser-tap")
 	ap.exitUserTapClient.Sync("onboarduser-tap")
 

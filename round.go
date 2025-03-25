@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"log"
-	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
@@ -32,7 +31,7 @@ func CreateRoundTransfer(boardingTransfer ArkBoardingTransfer, assetId []byte, u
 	// Create Level 1 Branch Transaction
 	createIntermediateChainTransfer(assetId, roundRootSpendingDetails, roundRootTransfer, level-1, user, server, &vtxoList)
 
-	sendTxResult := bitcoinClient.SendTransaction(roundRootTransfer.finalTx, time.Minute)
+	sendTxResult := bitcoinClient.SendTransaction(roundRootTransfer.finalTx)
 
 	rootProofFile := UpdateAndAppendProof(boardingTransfer.AssetTransferDetails.RawProofFile, roundRootTransfer.finalTx, roundRootTransfer.transferProof, sendTxResult)
 

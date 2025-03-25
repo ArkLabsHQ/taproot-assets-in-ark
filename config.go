@@ -31,7 +31,5 @@ type Config struct {
 
 	BitcoinClient BitcoinClientConfig `yaml:"bitcoin_client"`
 
-	Network string `yaml:"network"`
-
-	PrivateKey string `yaml:"private_key"`
+	Timeout int64 `yaml:"timeout"`
 }

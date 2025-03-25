@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -11,9 +12,14 @@ import (
 func main() {
 	// Create a new reader from standard input
 	reader := bufio.NewReader(os.Stdin)
+	// Define a command-line flag called "network" to determine which network.
+	network := flag.String("network", "regtest", "Specify the network to run the application")
+
+	// Parse the command-line flags.
+	flag.Parse()
 
 	// Initialise the App
-	app := Init()
+	app := Init(*network)
 
 	for {
 		// Display prompt

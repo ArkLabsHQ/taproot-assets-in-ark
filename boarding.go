@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"log"
-	"time"
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/txscript"
@@ -76,7 +75,7 @@ func OnboardUser(assetId []byte, asset_amnt uint64, btc_amnt uint64, boardingCli
 	}
 
 	// Ensure Btc and Asset Transfer Transfer
-	waitForTransfers(bitcoinClient, serverTapClient, msgTx.TxHash(), addr_resp, time.Minute)
+	waitForTransfers(bitcoinClient, serverTapClient, msgTx.TxHash(), addr_resp)
 
 	// Derive Onboard Proof
 	assetTransferProof := serverTapClient.ExportProof(assetId,

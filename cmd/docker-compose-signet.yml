@@ -1,6 +1,9 @@
-name: arkasset-network
+name: arkasset-network-signet
 services:
   onboarduser:
+    environment:
+      USERID: ${USERID:-1000}
+      GROUPID: ${GROUPID:-1000}
     stop_grace_period: 30s
     image: polarlightning/lnd:0.18.4-beta
     container_name: arkasset-onboarduser
@@ -12,14 +15,14 @@ services:
       --externalip=onboarduser --tlsextradomain=onboarduser --tlsextradomain=arkasset-onboarduser
       --tlsextradomain=host.docker.internal --listen=0.0.0.0:9735
       --rpclisten=0.0.0.0:10009 --restlisten=0.0.0.0:8080 --bitcoin.active
-      --bitcoin.regtest --bitcoin.node=bitcoind
+      --bitcoin.signet --bitcoin.node=bitcoind
       --bitcoind.rpchost=host.docker.internal --bitcoind.rpcuser=polaruser
       --bitcoind.rpcpass=polarpass
       --bitcoind.zmqpubrawblock=tcp://host.docker.internal:28334
       --bitcoind.zmqpubrawtx=tcp://host.docker.internal:29335
     restart: always
     volumes:
-      - ./data/regtest/volumes/lnd/onboarduser:/home/lnd/.lnd
+      - ./data/signet/volumes/lnd/onboarduser:/home/lnd/.lnd
     expose:
       - '8080'
       - '10009'
@@ -29,6 +32,9 @@ services:
       - '10001:10009'
       - '9735:9735'
   exituser:
+    environment:
+      USERID: ${USERID:-1000}
+      GROUPID: ${GROUPID:-1000}
     stop_grace_period: 30s
     image: polarlightning/lnd:0.18.4-beta
     container_name: arkasset-exituser
@@ -40,14 +46,14 @@ services:
       --externalip=exituser --tlsextradomain=exituser --tlsextradomain=arkasset-exituser
       --tlsextradomain=host.docker.internal --listen=0.0.0.0:9735
       --rpclisten=0.0.0.0:10009 --restlisten=0.0.0.0:8080 --bitcoin.active
-      --bitcoin.regtest --bitcoin.node=bitcoind
+      --bitcoin.signet --bitcoin.node=bitcoind
       --bitcoind.rpchost=host.docker.internal --bitcoind.rpcuser=polaruser
       --bitcoind.rpcpass=polarpass
       --bitcoind.zmqpubrawblock=tcp://host.docker.internal:28334
       --bitcoind.zmqpubrawtx=tcp://host.docker.internal:29335
     restart: always
     volumes:
-      - ./data/regtest/volumes/lnd/exituser:/home/lnd/.lnd
+      - ./data/signet/volumes/lnd/exituser:/home/lnd/.lnd
     expose:
       - '8080'
       - '10009'
@@ -57,6 +63,9 @@ services:
       - '10002:10009'
       - '9736:9735'
   server:
+    environment:
+      USERID: ${USERID:-1000}
+      GROUPID: ${GROUPID:-1000}
     stop_grace_period: 30s
     image: polarlightning/lnd:0.18.4-beta
     container_name: arkasset-server
@@ -68,14 +77,14 @@ services:
       --externalip=server --tlsextradomain=server --tlsextradomain=arkasset-server
       --tlsextradomain=host.docker.internal --listen=0.0.0.0:9735
       --rpclisten=0.0.0.0:10009 --restlisten=0.0.0.0:8080 --bitcoin.active
-      --bitcoin.regtest --bitcoin.node=bitcoind
+      --bitcoin.signet --bitcoin.node=bitcoind
       --bitcoind.rpchost=host.docker.internal --bitcoind.rpcuser=polaruser
       --bitcoind.rpcpass=polarpass
       --bitcoind.zmqpubrawblock=tcp://host.docker.internal:28334
       --bitcoind.zmqpubrawtx=tcp://host.docker.internal:29335
     restart: always
     volumes:
-      - ./data/regtest/volumes/lnd/server:/home/lnd/.lnd
+      - ./data/signet/volumes/lnd/server:/home/lnd/.lnd
     expose:
       - '8080'
       - '10009'
@@ -85,22 +94,25 @@ services:
       - '10003:10009'
       - '9737:9735'
   onboarduser-tap:
+    environment:
+      USERID: ${USERID:-1000}
+      GROUPID: ${GROUPID:-1000}
     stop_grace_period: 30s
     image: polarlightning/tapd:0.5.0-alpha
     container_name: arkasset-onboarduser-tap
     hostname: onboarduser-tap
     command: >-
-      tapd --network=regtest --debuglevel=debug --tlsextradomain=onboarduser-tap
+      tapd --network=signet --debuglevel=debug --tlsextradomain=onboarduser-tap
       --tlsextradomain=arkasset-onboarduser-tap --rpclisten=0.0.0.0:10029
       --restlisten=0.0.0.0:8089 --lnd.host=arkasset-onboarduser:10009
-      --lnd.macaroonpath=/home/tap/.lnd/data/chain/bitcoin/regtest/admin.macaroon
+      --lnd.macaroonpath=/home/tap/.lnd/data/chain/bitcoin/signet/admin.macaroon
       --lnd.tlspath=/home/tap/.lnd/tls.cert --allow-public-uni-proof-courier
       --allow-public-stats --universe.public-access=rw
       --universe.sync-all-assets
     restart: always
     volumes:
-      - ./data/regtest/volumes/lnd/onboarduser:/home/tap/.lnd
-      - ./data/regtest/volumes/tapd/onboarduser-tap:/home/tap/.tapd
+      - ./data/signet/volumes/lnd/onboarduser:/home/tap/.lnd
+      - ./data/signet/volumes/tapd/onboarduser-tap:/home/tap/.tapd
     expose:
       - '8089'
       - '10029'
@@ -108,22 +120,25 @@ services:
       - '8289:8089'
       - '12029:10029'
   exituser-tap:
+    environment:
+      USERID: ${USERID:-1000}
+      GROUPID: ${GROUPID:-1000}
     stop_grace_period: 30s
     image: tapasset_jsoh_refined1:latest
     container_name: arkasset-exituser-tap
     hostname: exituser-tap
     command: >-
-      tapd --network=regtest --debuglevel=debug --tlsextradomain=exituser-tap
+      tapd --network=signet --debuglevel=debug --tlsextradomain=exituser-tap
       --tlsextradomain=arkasset-exituser-tap --rpclisten=0.0.0.0:10029
       --restlisten=0.0.0.0:8089 --lnd.host=arkasset-exituser:10009
-      --lnd.macaroonpath=/home/tap/.lnd/data/chain/bitcoin/regtest/admin.macaroon
+      --lnd.macaroonpath=/home/tap/.lnd/data/chain/bitcoin/signet/admin.macaroon
       --lnd.tlspath=/home/tap/.lnd/tls.cert --allow-public-uni-proof-courier
       --allow-public-stats --universe.public-access=rw
       --universe.sync-all-assets
     restart: always
     volumes:
-      - ./data/regtest/volumes/lnd/exituser:/home/tap/.lnd
-      - ./data/regtest/volumes/tapd/exituser-tap:/home/tap/.tapd
+      - ./data/signet/volumes/lnd/exituser:/home/tap/.lnd
+      - ./data/signet/volumes/tapd/exituser-tap:/home/tap/.tapd
     expose:
       - '8089'
       - '10029'
@@ -131,22 +146,25 @@ services:
       - '8290:8089'
       - '12030:10029'
   server-tap:
+    environment:
+      USERID: ${USERID:-1000}
+      GROUPID: ${GROUPID:-1000}
     stop_grace_period: 30s
     image: tapasset_jsoh_refined1:latest
     container_name: arkasset-server-tap
     hostname: server-tap
     command: >-
-      tapd --network=regtest --debuglevel=debug --tlsextradomain=server-tap
+      tapd --network=signet --debuglevel=debug --tlsextradomain=server-tap
       --tlsextradomain=arkasset-server-tap --rpclisten=0.0.0.0:10029
       --restlisten=0.0.0.0:8089 --lnd.host=arkasset-server:10009
-      --lnd.macaroonpath=/home/tap/.lnd/data/chain/bitcoin/regtest/admin.macaroon
+      --lnd.macaroonpath=/home/tap/.lnd/data/chain/bitcoin/signet/admin.macaroon
       --lnd.tlspath=/home/tap/.lnd/tls.cert --allow-public-uni-proof-courier
       --allow-public-stats --universe.public-access=rw
       --universe.sync-all-assets
     restart: always
     volumes:
-      - ./data/regtest/volumes/lnd/server:/home/tap/.lnd
-      - ./data/regtest/volumes/tapd/server-tap:/home/tap/.tapd
+      - ./data/signet/volumes/lnd/server:/home/tap/.lnd
+      - ./data/signet/volumes/tapd/server-tap:/home/tap/.tapd
     expose:
       - '8089'
       - '10029'

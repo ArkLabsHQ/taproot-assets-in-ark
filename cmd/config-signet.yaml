@@ -33,5 +33,3 @@ bitcoin_client:
   port: "18443"
   user: "polaruser"
   password: "polarpass"
-
-timeout: 2

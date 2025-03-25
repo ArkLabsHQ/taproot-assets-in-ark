@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"sync"
-	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
@@ -129,7 +128,7 @@ func addBtcOutput(transferPacket *psbt.Packet, amount uint64, internalKey *btcec
 }
 
 // waitForTransfers concurrently waits for both the BTC confirmation and the asset transfer event.
-func waitForTransfers(bitcoinClient *BitcoinClient, serverTapClient *TapClient, txHash chainhash.Hash, assetAddr *taprpc.Addr, timeout time.Duration) error {
+func waitForTransfers(bitcoinClient *BitcoinClient, serverTapClient *TapClient, txHash chainhash.Hash, assetAddr *taprpc.Addr) error {
 	var wg sync.WaitGroup
 	errCh := make(chan error, 2)
 
@@ -137,7 +136,7 @@ func waitForTransfers(bitcoinClient *BitcoinClient, serverTapClient *TapClient, 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if err := bitcoinClient.WaitForConfirmation(txHash, timeout); err != nil {
+		if err := bitcoinClient.WaitForConfirmation(txHash); err != nil {
 			errCh <- fmt.Errorf("BTC confirmation failed: %w", err)
 		}
 	}()
@@ -146,7 +145,7 @@ func waitForTransfers(bitcoinClient *BitcoinClient, serverTapClient *TapClient, 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if err := serverTapClient.IncomingTransferEvent(assetAddr, timeout); err != nil {
+		if err := serverTapClient.IncomingTransferEvent(assetAddr); err != nil {
 			errCh <- fmt.Errorf("asset transfer event failed: %w", err)
 		}
 	}()

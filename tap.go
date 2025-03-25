@@ -49,9 +49,10 @@ type TapClient struct {
 	closeClient    func()
 	chainParams    chaincfg.Params
 	tapParams      address.ChainParams
+	timeout        time.Duration
 }
 
-func InitTapClient(tapConfig TapClientConfig, lndClient LndClient, tlsCert, adminMacaroon string, chainParams chaincfg.Params, tapParams address.ChainParams) TapClient {
+func InitTapClient(tapConfig TapClientConfig, lndClient LndClient, tlsCert, adminMacaroon string, chainParams chaincfg.Params, tapParams address.ChainParams, timeout time.Duration) TapClient {
 	hostPort := tapConfig.Host + ":" + tapConfig.Port
 	clientConn, err := NewBasicConn(hostPort, tapConfig.Port, tlsCert, adminMacaroon)
 
@@ -75,6 +76,7 @@ func InitTapClient(tapConfig TapClientConfig, lndClient LndClient, tlsCert, admi
 		lndClient:      lndClient,
 		chainParams:    chainParams,
 		tapParams:      tapParams,
+		timeout:        timeout,
 	}
 
 }
@@ -151,7 +153,7 @@ func (cl *TapClient) ExportProof(assetId []byte, scriptKey []byte) *taprpc.Proof
 	return fullProof
 }
 
-func (cl *TapClient) CreateAsset(duration time.Duration) []byte {
+func (cl *TapClient) CreateAsset() []byte {
 	// Mint an asset into a downgraded anchor commitment.
 	manualAssetName, err := RandomHexString(5)
 	if err != nil {
@@ -183,7 +185,7 @@ func (cl *TapClient) CreateAsset(duration time.Duration) []byte {
 		log.Fatalf("cannot finalise batch %v", err)
 	}
 
-	assetId, err := cl.IncomingMintEvent(manualAssetName, duration)
+	assetId, err := cl.IncomingMintEvent(manualAssetName)
 
 	if err != nil {
 		log.Fatalf("cannot get asset %v", err)
@@ -275,7 +277,7 @@ func (cl *TapClient) Sync(rpcHost string) {
 	}
 }
 
-func (cl *TapClient) IncomingMintEvent(assetName string, duration time.Duration) ([]byte, error) {
+func (cl *TapClient) IncomingMintEvent(assetName string) ([]byte, error) {
 	var assetId []byte
 	err := wait.NoError(func() error {
 		resp, err := cl.client.ListAssets(
@@ -300,12 +302,12 @@ func (cl *TapClient) IncomingMintEvent(assetName string, duration time.Duration)
 			}
 		}
 		return fmt.Errorf("new assets not found")
-	}, 3*duration)
+	}, cl.timeout)
 
 	return assetId, err
 }
 
-func (cl *TapClient) IncomingTransferEvent(addr *taprpc.Addr, duration time.Duration) error {
+func (cl *TapClient) IncomingTransferEvent(addr *taprpc.Addr) error {
 	err := wait.NoError(func() error {
 		resp, err := cl.client.AddrReceives(
 			context.TODO(), &taprpc.AddrReceivesRequest{
@@ -326,7 +328,7 @@ func (cl *TapClient) IncomingTransferEvent(addr *taprpc.Addr, duration time.Dura
 				resp.Events[0].Status, taprpc.AddrEventStatus_ADDR_EVENT_STATUS_COMPLETED)
 		}
 		return nil
-	}, duration)
+	}, cl.timeout)
 
 	return err
 }
