@@ -16,10 +16,10 @@ services:
       --tlsextradomain=host.docker.internal --listen=0.0.0.0:9735
       --rpclisten=0.0.0.0:10009 --restlisten=0.0.0.0:8080 --bitcoin.active
       --bitcoin.signet --bitcoin.node=bitcoind
-      --bitcoind.rpchost=host.docker.internal --bitcoind.rpcuser=polaruser
-      --bitcoind.rpcpass=polarpass
-      --bitcoind.zmqpubrawblock=tcp://host.docker.internal:28334
-      --bitcoind.zmqpubrawtx=tcp://host.docker.internal:29335
+      --bitcoind.rpchost=bitcoind.signet.arkade.sh:18443 --bitcoind.rpcuser=signetarklabs
+      --bitcoind.rpcpass=signetarklabs
+      --bitcoind.zmqpubrawblock=tcp://bitcoind.signet.arkade.sh:28334
+      --bitcoind.zmqpubrawtx=tcp://bitcoind.signet.arkade.sh:28335
     restart: always
     volumes:
       - ./data/signet/volumes/lnd/onboarduser:/home/lnd/.lnd
@@ -47,10 +47,10 @@ services:
       --tlsextradomain=host.docker.internal --listen=0.0.0.0:9735
       --rpclisten=0.0.0.0:10009 --restlisten=0.0.0.0:8080 --bitcoin.active
       --bitcoin.signet --bitcoin.node=bitcoind
-      --bitcoind.rpchost=host.docker.internal --bitcoind.rpcuser=polaruser
-      --bitcoind.rpcpass=polarpass
-      --bitcoind.zmqpubrawblock=tcp://host.docker.internal:28334
-      --bitcoind.zmqpubrawtx=tcp://host.docker.internal:29335
+      --bitcoind.rpchost=bitcoind.signet.arkade.sh:18443 --bitcoind.rpcuser=signetarklabs
+      --bitcoind.rpcpass=signetarklabs
+      --bitcoind.zmqpubrawblock=tcp://bitcoind.signet.arkade.sh:28334
+      --bitcoind.zmqpubrawtx=tcp://bitcoind.signet.arkade.sh:28335
     restart: always
     volumes:
       - ./data/signet/volumes/lnd/exituser:/home/lnd/.lnd
@@ -78,10 +78,10 @@ services:
       --tlsextradomain=host.docker.internal --listen=0.0.0.0:9735
       --rpclisten=0.0.0.0:10009 --restlisten=0.0.0.0:8080 --bitcoin.active
       --bitcoin.signet --bitcoin.node=bitcoind
-      --bitcoind.rpchost=host.docker.internal --bitcoind.rpcuser=polaruser
-      --bitcoind.rpcpass=polarpass
-      --bitcoind.zmqpubrawblock=tcp://host.docker.internal:28334
-      --bitcoind.zmqpubrawtx=tcp://host.docker.internal:29335
+      --bitcoind.rpchost=bitcoind.signet.arkade.sh:18443 --bitcoind.rpcuser=signetarklabs
+      --bitcoind.rpcpass=signetarklabs
+      --bitcoind.zmqpubrawblock=tcp://bitcoind.signet.arkade.sh:28334
+      --bitcoind.zmqpubrawtx=tcp://bitcoind.signet.arkade.sh:28335
     restart: always
     volumes:
       - ./data/signet/volumes/lnd/server:/home/lnd/.lnd

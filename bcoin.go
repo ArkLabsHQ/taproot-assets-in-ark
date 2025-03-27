@@ -3,6 +3,7 @@ package taponark
 import (
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/btcsuite/btcd/chaincfg"
@@ -15,6 +16,7 @@ import (
 type BitcoinSendTxResult struct {
 	block       *wire.MsgBlock
 	blockHeight int64
+	txindex     int
 }
 
 type BitcoinClient struct {
@@ -48,11 +50,14 @@ func (b BitcoinClient) WaitForConfirmation(txhash chainhash.Hash) error {
 	log.Println("awaiting block to be mined")
 	err := wait.NoError(func() error {
 		txInfo, err := b.client.GetRawTransactionVerbose(&txhash)
-		if err != nil {
-			return fmt.Errorf("failed to get transaction: %w", err)
-		}
-		if txInfo.Confirmations == 0 {
-			return fmt.Errorf("transaction not confirmed with hash %s", txhash.String())
+		if err == nil {
+			if txInfo.Confirmations == 0 {
+				return fmt.Errorf("transaction not confirmed with hash %s", txhash.String())
+			}
+		} else {
+			if !strings.Contains(err.Error(), "-5: No such mempool transaction") {
+				return fmt.Errorf("failed to get transaction: %w", err)
+			}
 		}
 		return nil
 	}, b.timeout)
@@ -72,36 +77,41 @@ func (b BitcoinClient) SendTransaction(transaction *wire.MsgTx) (BitcoinSendTxRe
 
 	err = wait.NoError(func() error {
 		txInfo, err := b.client.GetRawTransactionVerbose(txhash)
-		if err != nil {
-			return fmt.Errorf("failed to get transaction: %w", err)
+		if err == nil {
+			if txInfo.Confirmations == 0 {
+				return fmt.Errorf("transaction not confirmed with hash %s", txhash.String())
+			}
+		} else {
+			if !strings.Contains(err.Error(), "-5: No such mempool transaction") {
+				return fmt.Errorf("failed to get transaction: %w", err)
+			}
 		}
-		if txInfo.Confirmations < 1 {
-			return fmt.Errorf("transaction not confirmed with hash %s", txhash.String())
+		for {
+			blockheight, err := b.client.GetBlockCount()
+			if err != nil {
+				return fmt.Errorf("cannot get blocokheight %v", err)
+			}
+
+			blockhash, err := b.client.GetBlockHash(blockheight)
+			if err != nil {
+				return fmt.Errorf("cannot get block  hash%v", err)
+			}
+
+			block, err := b.client.GetBlock(blockhash)
+			if err != nil {
+				return fmt.Errorf("cannot get block  %v", err)
+			}
+
+			for index, txn := range block.Transactions {
+				if txn.TxHash().String() == txhash.String() {
+					bitcoinSendResult = BitcoinSendTxResult{block, blockheight, index}
+					return nil
+				}
+			}
+
 		}
 
-		var blockhash chainhash.Hash
-		err = chainhash.Decode(&blockhash, txInfo.BlockHash)
-		if err != nil {
-			return fmt.Errorf("cannot decode chainhash %v", err)
-		}
-
-		block, err := b.client.GetBlock(&blockhash)
-		if err != nil {
-			return fmt.Errorf("cannot get block %v", err)
-		}
-
-		blockheight, err := b.client.GetBlockCount()
-		if err != nil {
-			return fmt.Errorf("cannot get blocokheight %v", err)
-		}
-
-		bitcoinSendResult = BitcoinSendTxResult{block, blockheight}
-		return nil
 	}, b.timeout)
 
-	if err != nil {
-		return BitcoinSendTxResult{}, fmt.Errorf("Error In Sending Transaction %v", err)
-	}
-
-	return bitcoinSendResult, nil
+	return bitcoinSendResult, err
 }

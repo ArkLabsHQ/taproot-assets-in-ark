@@ -18,6 +18,11 @@ func main() {
 	// Parse the command-line flags.
 	flag.Parse()
 
+	log.Println("Welcome to the Taproot Assets CLI")
+	log.Println("------------------------------------------------")
+
+	log.Println("Network: ", *network)
+
 	// Initialise the App
 	app := Init(*network)
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log"
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/txscript"
@@ -36,6 +37,8 @@ func OnboardUser(assetId []byte, asset_amnt uint64, btc_amnt uint64, boardingCli
 		return ArkBoardingTransfer{}, fmt.Errorf("cannot send asset %v", err)
 	}
 
+	log.Printf("Boarding Asset TxId %s", sendResp.Transfer.AnchorTxBlockHash.String())
+
 	// Insert Control Block
 	assetTransferOutput := sendResp.Transfer.Outputs[BOARDING_ASSET_TRANSFER_OUTPUT_INDEX]
 	taprootAssetRoot := assetTransferOutput.Anchor.TaprootAssetRoot
@@ -55,7 +58,7 @@ func OnboardUser(assetId []byte, asset_amnt uint64, btc_amnt uint64, boardingCli
 	outputKey := txscript.ComputeTaprootOutputKey(asset.NUMSPubKey, rootHash)
 	pkScript, err := txscript.PayToTaprootScript(outputKey)
 	if err != nil {
-		return ArkBoardingTransfer{}, fmt.Errorf("cannot create Pay To Taproot Script", err)
+		return ArkBoardingTransfer{}, fmt.Errorf("cannot create Pay To Taproot Script %v", err)
 	}
 
 	//send Btc to onboarding Input
@@ -63,6 +66,8 @@ func OnboardUser(assetId []byte, asset_amnt uint64, btc_amnt uint64, boardingCli
 	if err != nil {
 		return ArkBoardingTransfer{}, fmt.Errorf("cannot send btc to output %v", err)
 	}
+
+	log.Printf("Boarding BTC TxId %s", msgTx.TxHash().String())
 
 	var txout *wire.TxOut
 	var transferOutpoint *wire.OutPoint

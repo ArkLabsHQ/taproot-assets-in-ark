@@ -1,15 +1,15 @@
-name: arkasset-network
+name: arkasset-network-regtest
 services:
   onboarduser:
     stop_grace_period: 30s
     image: polarlightning/lnd:0.18.4-beta
-    container_name: arkasset-onboarduser
-    hostname: onboarduser
+    container_name: arkasset-onboarduser-regtest
+    hostname: onboarduser-regtest
     extra_hosts:
       - "host.docker.internal:host-gateway"
     command: >-
-      lnd --noseedbackup --debuglevel=debug --trickledelay=5000 --alias=onboarduser
-      --externalip=onboarduser --tlsextradomain=onboarduser --tlsextradomain=arkasset-onboarduser
+      lnd --noseedbackup --debuglevel=debug --trickledelay=5000 --alias=onboarduser-regtest
+      --externalip=onboarduser-regtest --tlsextradomain=onboarduser-regtest --tlsextradomain=arkasset-onboarduser-regtest
       --tlsextradomain=host.docker.internal --listen=0.0.0.0:9735
       --rpclisten=0.0.0.0:10009 --restlisten=0.0.0.0:8080 --bitcoin.active
       --bitcoin.regtest --bitcoin.node=bitcoind
@@ -31,13 +31,13 @@ services:
   exituser:
     stop_grace_period: 30s
     image: polarlightning/lnd:0.18.4-beta
-    container_name: arkasset-exituser
+    container_name: arkasset-exituser-regtest
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    hostname: exituser
+    hostname: exituser-regtest
     command: >-
-      lnd --noseedbackup --debuglevel=debug --trickledelay=5000 --alias=exituser
-      --externalip=exituser --tlsextradomain=exituser --tlsextradomain=arkasset-exituser
+      lnd --noseedbackup --debuglevel=debug --trickledelay=5000 --alias=exituser-regtest
+      --externalip=exituser-regtest --tlsextradomain=exituser-regtest --tlsextradomain=arkasset-exituser-regtest
       --tlsextradomain=host.docker.internal --listen=0.0.0.0:9735
       --rpclisten=0.0.0.0:10009 --restlisten=0.0.0.0:8080 --bitcoin.active
       --bitcoin.regtest --bitcoin.node=bitcoind
@@ -59,13 +59,13 @@ services:
   server:
     stop_grace_period: 30s
     image: polarlightning/lnd:0.18.4-beta
-    container_name: arkasset-server
+    container_name: arkasset-server-regtest
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    hostname: server
+    hostname: server-regtest
     command: >-
-      lnd --noseedbackup --debuglevel=debug --trickledelay=5000 --alias=server
-      --externalip=server --tlsextradomain=server --tlsextradomain=arkasset-server
+      lnd --noseedbackup --debuglevel=debug --trickledelay=5000 --alias=server-regtest
+      --externalip=server-regtest --tlsextradomain=server-regtest --tlsextradomain=arkasset-server-regtest
       --tlsextradomain=host.docker.internal --listen=0.0.0.0:9735
       --rpclisten=0.0.0.0:10009 --restlisten=0.0.0.0:8080 --bitcoin.active
       --bitcoin.regtest --bitcoin.node=bitcoind
@@ -87,12 +87,12 @@ services:
   onboarduser-tap:
     stop_grace_period: 30s
     image: polarlightning/tapd:0.5.0-alpha
-    container_name: arkasset-onboarduser-tap
-    hostname: onboarduser-tap
+    container_name: arkasset-onboarduser-tap-regtest
+    hostname: onboarduser-tap-regtest
     command: >-
-      tapd --network=regtest --debuglevel=debug --tlsextradomain=onboarduser-tap
-      --tlsextradomain=arkasset-onboarduser-tap --rpclisten=0.0.0.0:10029
-      --restlisten=0.0.0.0:8089 --lnd.host=arkasset-onboarduser:10009
+      tapd --network=regtest --debuglevel=debug --tlsextradomain=onboarduser-tap-regtest
+      --tlsextradomain=arkasset-onboarduser-tap-regtest --rpclisten=0.0.0.0:10029
+      --restlisten=0.0.0.0:8089 --lnd.host=arkasset-onboarduser-regtest:10009
       --lnd.macaroonpath=/home/tap/.lnd/data/chain/bitcoin/regtest/admin.macaroon
       --lnd.tlspath=/home/tap/.lnd/tls.cert --allow-public-uni-proof-courier
       --allow-public-stats --universe.public-access=rw
@@ -110,12 +110,12 @@ services:
   exituser-tap:
     stop_grace_period: 30s
     image: tapasset_jsoh_refined1:latest
-    container_name: arkasset-exituser-tap
-    hostname: exituser-tap
+    container_name: arkasset-exituser-tap-regtest
+    hostname: exituser-tap-regtest
     command: >-
-      tapd --network=regtest --debuglevel=debug --tlsextradomain=exituser-tap
-      --tlsextradomain=arkasset-exituser-tap --rpclisten=0.0.0.0:10029
-      --restlisten=0.0.0.0:8089 --lnd.host=arkasset-exituser:10009
+      tapd --network=regtest --debuglevel=debug --tlsextradomain=exituser-tap-regtest
+      --tlsextradomain=arkasset-exituser-tap-regtest --rpclisten=0.0.0.0:10029
+      --restlisten=0.0.0.0:8089 --lnd.host=arkasset-exituser-regtest:10009
       --lnd.macaroonpath=/home/tap/.lnd/data/chain/bitcoin/regtest/admin.macaroon
       --lnd.tlspath=/home/tap/.lnd/tls.cert --allow-public-uni-proof-courier
       --allow-public-stats --universe.public-access=rw
@@ -133,12 +133,12 @@ services:
   server-tap:
     stop_grace_period: 30s
     image: tapasset_jsoh_refined1:latest
-    container_name: arkasset-server-tap
-    hostname: server-tap
+    container_name: arkasset-server-tap-regtest
+    hostname: server-tap-regtest
     command: >-
-      tapd --network=regtest --debuglevel=debug --tlsextradomain=server-tap
-      --tlsextradomain=arkasset-server-tap --rpclisten=0.0.0.0:10029
-      --restlisten=0.0.0.0:8089 --lnd.host=arkasset-server:10009
+      tapd --network=regtest --debuglevel=debug --tlsextradomain=server-tap-regtest
+      --tlsextradomain=arkasset-server-tap-regtest --rpclisten=0.0.0.0:10029
+      --restlisten=0.0.0.0:8089 --lnd.host=arkasset-server-regtest:10009
       --lnd.macaroonpath=/home/tap/.lnd/data/chain/bitcoin/regtest/admin.macaroon
       --lnd.tlspath=/home/tap/.lnd/tls.cert --allow-public-uni-proof-courier
       --allow-public-stats --universe.public-access=rw

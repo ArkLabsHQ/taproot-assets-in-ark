@@ -20,7 +20,7 @@ func UpdateAndAppendProof(proofFile []byte, finalTx *wire.MsgTx, transferProof *
 		Block:       sendTxResult.block,
 		Tx:          finalTx,
 		BlockHeight: uint32(sendTxResult.blockHeight),
-		TxIndex:     int(1),
+		TxIndex:     sendTxResult.txindex,
 	}
 
 	err = transferProof.UpdateTransitionProof(&proofParams)

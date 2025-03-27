@@ -2,36 +2,45 @@ server_tap:
   host: "localhost"
   port: "12031"
   container: "server-tap"
+  hostname: "server-tap-mutinynet"
 
 server_lnd:
   host: "localhost"
   port: "10003"
   container: "server"
+  hostname: "server-mutinynet"
 
 onboard_user_tap: 
   host_port: "localhost"
   port: "12029"
   container: "onboarduser-tap"
+  hostname: "onboarduser-tap-mutinynet"
 
 onboard_user_lnd:
   host_port: "localhost"
   port: "10001"
   container: "onboarduser"
+  hostname: "onboarduser-mutinynet"
+
 
 exit_user_tap:
   host: "localhost"
   port: "12030"
   container: "exituser-tap"
+  hostname: "exituser-tap-mutinynet"
 
 exit_user_lnd:
   host_port: "localhost"
   port: "10002"
-  container: "exituser"
+  container: "exituser-mutinynet"
+  hostname: "exituser"
 
 bitcoin_client:
-  host: "bitcoind.signet.arkade.sh"
+  host: "bitcoind.mutinynet.arkade.sh"
   port: "18443"
-  user: "signetarklabs"
-  password: "signetarklabs"
+  user: "ceiwHEbqWI83"
+  password: "DwubwWsoo3"
 
-timeout: 30
+timeout: 5
+
+signet_challenge: 512102f7561d208dd9ae99bf497273e16f389bdbd6c4742ddb8e6b216e64fa2928ad8f51ae

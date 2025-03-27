@@ -40,6 +40,7 @@ import (
 )
 
 type TapClient struct {
+	universeHost   string
 	client         taprpc.TaprootAssetsClient
 	wallet         assetwalletrpc.AssetWalletClient
 	devclient      tapdevrpc.TapDevClient
@@ -52,7 +53,7 @@ type TapClient struct {
 	timeout        time.Duration
 }
 
-func InitTapClient(tapConfig TapClientConfig, lndClient LndClient, tlsCert, adminMacaroon string, chainParams chaincfg.Params, tapParams address.ChainParams, timeout time.Duration) TapClient {
+func InitTapClient(universeHost string, tapConfig TapClientConfig, lndClient LndClient, tlsCert, adminMacaroon string, chainParams chaincfg.Params, tapParams address.ChainParams, timeout time.Duration) TapClient {
 	hostPort := tapConfig.Host + ":" + tapConfig.Port
 	clientConn, err := NewBasicConn(hostPort, tapConfig.Port, tlsCert, adminMacaroon)
 
@@ -68,7 +69,10 @@ func InitTapClient(tapConfig TapClientConfig, lndClient LndClient, tlsCert, admi
 	mintclient := mintrpc.NewMintClient(clientConn)
 	universeclient := universerpc.NewUniverseClient(clientConn)
 
-	return TapClient{client: taprpc.NewTaprootAssetsClient(clientConn), wallet: assetwalletrpc.NewAssetWalletClient(clientConn),
+	return TapClient{
+		universeHost:   universeHost,
+		client:         taprpc.NewTaprootAssetsClient(clientConn),
+		wallet:         assetwalletrpc.NewAssetWalletClient(clientConn),
 		devclient:      devclient,
 		mintclient:     mintclient,
 		universeclient: universeclient,
@@ -105,7 +109,7 @@ func (cl *TapClient) GetNewAddress(scriptBranch txscript.TapBranch, assetScriptK
 	})
 
 	if err != nil {
-		return nil, fmt.Errorf("Cannot Get new Asset Address %v", err)
+		return nil, fmt.Errorf("cannot Get new Asset Address %v", err)
 	}
 
 	return addr, nil
@@ -118,7 +122,7 @@ func (cl *TapClient) GetBtcAddress() (string, error) {
 	})
 
 	if err != nil {
-		return "", fmt.Errorf("Cannot Get new Btc Address %v", err)
+		return "", fmt.Errorf("cannot Get new Btc Address %v", err)
 	}
 
 	return addr.Addr, nil
@@ -128,6 +132,7 @@ func (cl *TapClient) SendAsset(addr *taprpc.Addr) (*taprpc.SendAssetResponse, er
 	return cl.client.SendAsset(
 		context.TODO(), &taprpc.SendAssetRequest{
 			TapAddrs: []string{addr.Encoded},
+			FeeRate:  2000,
 		},
 	)
 }
@@ -193,16 +198,21 @@ func (cl *TapClient) GetBalance(assetId []byte) (uint64, int64, error) {
 		},
 		AssetFilter: assetId,
 	})
+	if err != nil {
+		return 0, 0, fmt.Errorf("cannot get asset balance %v", err)
+	}
 
 	assetBalance := uint64(0)
 
 	for _, balance := range assetbalanceResponse.AssetBalances {
-		assetBalance = balance.Balance
-		break
-	}
+		if assetId == nil {
+			break
+		}
+		if bytes.Equal(balance.AssetGenesis.AssetId, assetId) {
+			assetBalance = balance.Balance
+			break
+		}
 
-	if err != nil {
-		return 0, 0, fmt.Errorf("cannot get asset balance %v", err)
 	}
 
 	btcBalanceResponse, err := cl.lndClient.wallet.ListAddresses(context.TODO(), &walletrpc.ListAddressesRequest{})
@@ -258,9 +268,9 @@ func (cl *TapClient) GetNextKeys() (asset.ScriptKey,
 	return *scriptKey, internalKey, nil
 }
 
-func (cl *TapClient) Sync(rpcHost string) error {
+func (cl *TapClient) Sync() error {
 	_, err := cl.universeclient.SyncUniverse(context.TODO(), &universerpc.SyncRequest{
-		UniverseHost: rpcHost,
+		UniverseHost: cl.universeHost,
 		SyncMode:     universerpc.UniverseSyncMode_SYNC_FULL,
 	})
 
@@ -352,7 +362,7 @@ func (cl *TapClient) createMuSig2Session(
 	)
 
 	if err != nil {
-		return nil, fmt.Errorf("Cannot create MuSig2 Session %v", err)
+		return nil, fmt.Errorf("cannot create MuSig2 Session %v", err)
 	}
 
 	return sess.SessionId, nil
@@ -371,7 +381,7 @@ func (cl *TapClient) combineSigs(sessID,
 	)
 
 	if err != nil {
-		return wire.TxWitness{}, fmt.Errorf("Cannot combine signature %v", err)
+		return wire.TxWitness{}, fmt.Errorf("cannot combine signature %v", err)
 	}
 
 	for _, leaf := range tree.LeafMerkleProofs {
@@ -382,7 +392,7 @@ func (cl *TapClient) combineSigs(sessID,
 
 	controlBlockBytes, err := controlBlock.ToBytes()
 	if err != nil {
-		return wire.TxWitness{}, fmt.Errorf("Cannot Get control byte %v", err)
+		return wire.TxWitness{}, fmt.Errorf("cannot Get control byte %v", err)
 	}
 
 	commitmentWitness := make(wire.TxWitness, 3)
@@ -590,7 +600,7 @@ func (cl *TapClient) partialSignAssetTransfer(assetTransferPacket *tappsbt.VPack
 		[][]byte{remoteNonce[:]},
 	)
 	if err != nil {
-		return nil, nil, fmt.Errorf("Cannot create MuSig2 Session %v", err)
+		return nil, nil, fmt.Errorf("cannot create MuSig2 Session %v", err)
 	}
 
 	partialSigner := &muSig2PartialSigner{
@@ -617,12 +627,12 @@ func (cl *TapClient) partialSignAssetTransfer(assetTransferPacket *tappsbt.VPack
 		assetTransferPacket, partialSigner, partialSigner,
 	)
 	if err != nil {
-		return nil, nil, fmt.Errorf("Cannot Sign Virtual Transaction %v", err)
+		return nil, nil, fmt.Errorf("cannot Sign Virtual Transaction %v", err)
 	}
 
 	isSplit, err := assetTransferPacket.HasSplitCommitment()
 	if err != nil {
-		return nil, nil, fmt.Errorf("Cannot check for split commitment %v", err)
+		return nil, nil, fmt.Errorf("cannot check for split commitment %v", err)
 	}
 
 	// Identify new output asset. For splits, the new asset that received
@@ -631,7 +641,7 @@ func (cl *TapClient) partialSignAssetTransfer(assetTransferPacket *tappsbt.VPack
 	if isSplit {
 		splitOut, err := assetTransferPacket.SplitRootOutput()
 		if err != nil {
-			return nil, nil, fmt.Errorf("Cannot get split root output %v", err)
+			return nil, nil, fmt.Errorf("cannot get split root output %v", err)
 		}
 
 		newAsset = splitOut.Asset

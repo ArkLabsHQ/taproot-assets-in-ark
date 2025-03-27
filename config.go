@@ -4,12 +4,14 @@ type TapClientConfig struct {
 	Host      string `yaml:"host"`
 	Port      string `yaml:"port"`
 	Container string `yaml:"container"`
+	Hostname  string `yaml:"hostname"`
 }
 
 type LndClientConfig struct {
 	Host      string `yaml:"host"`
 	Port      string `yaml:"port"`
 	Container string `yaml:"container"`
+	Hostname  string `yaml:"hostname"`
 }
 
 type BitcoinClientConfig struct {
@@ -32,4 +34,6 @@ type Config struct {
 	BitcoinClient BitcoinClientConfig `yaml:"bitcoin_client"`
 
 	Timeout int64 `yaml:"timeout"`
+
+	SignetChallenge *string `yaml:"signet_challenge,omitempty"`
 }

@@ -2,31 +2,38 @@ server_tap:
   host: "localhost"
   port: "12031"
   container: "server-tap"
+  hostname: "server-tap-regtest"
 
 server_lnd:
   host: "localhost"
   port: "10003"
   container: "server"
+  hostname: "server-regtest"
 
 onboard_user_tap: 
   host_port: "localhost"
   port: "12029"
   container: "onboarduser-tap"
+  hostname: "onboarduser-tap-regtest"
 
 onboard_user_lnd:
   host_port: "localhost"
   port: "10001"
   container: "onboarduser"
+  hostname: "onboarduser-regtest"
+
 
 exit_user_tap:
   host: "localhost"
   port: "12030"
   container: "exituser-tap"
+  hostname: "exituser-tap-regtest"
 
 exit_user_lnd:
   host_port: "localhost"
   port: "10002"
   container: "exituser"
+  hostname: "exituser-regtest"
 
 bitcoin_client:
   host: "127.0.0.1"
@@ -35,3 +42,4 @@ bitcoin_client:
   password: "polarpass"
 
 timeout: 2
+
