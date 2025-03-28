@@ -7,13 +7,10 @@ import (
 	"log"
 
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
-	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
-	"github.com/lightninglabs/taproot-assets/address"
 	"github.com/lightninglabs/taproot-assets/asset"
 	"github.com/lightninglabs/taproot-assets/commitment"
 	"github.com/lightninglabs/taproot-assets/tappsbt"
-	"github.com/lightninglabs/taproot-assets/taprpc"
 	"github.com/lightninglabs/taproot-assets/tapsend"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
@@ -175,48 +172,23 @@ func createIntermediateChainTransfer(assetId []byte, inputSpendingDetails ArkSpe
 }
 
 func createFinalChainTransfer(assetId []byte, inputSpendingDetails ArkSpendingDetails, inputChainTransfer ChainTransfer, user, server *TapClient, vtxoList *[]VirtualTxOut) error {
-	assetOutputIndex := 1
-	assetAmountInBtc := DUMMY_ASSET_BTC_AMOUNT
+	assetOutputIndex := 0
 	changeAssetInBtc := DUMMY_ASSET_BTC_AMOUNT
-	btcAmount := inputChainTransfer.anchorValue - int64(assetAmountInBtc) - int64(changeAssetInBtc) - int64(FEE)
+	btcAmount := inputChainTransfer.anchorValue - int64(changeAssetInBtc) - int64(FEE)
 	// TODO (Joshua Kindly Improve to only have two output)
-	asset_addr_resp, err := user.client.NewAddr(context.TODO(), &taprpc.NewAddrRequest{
-		AssetId: assetId,
-		Amt:     inputChainTransfer.assetAmount,
-	})
-
+	scriptKey, internalKey, err := user.GetNextKeys()
 	if err != nil {
-		return fmt.Errorf("cannot get asset left address %v", err)
+		return fmt.Errorf("can get next keys %v", err)
 	}
 
-	asset_addr, err := address.DecodeAddress(asset_addr_resp.Encoded, &server.tapParams)
-	if err != nil {
-		return fmt.Errorf("cannot decode address %v", err)
-	}
+	fundedPkt := tappsbt.ForInteractiveSend(asset.ID(assetId), inputChainTransfer.assetAmount, scriptKey, 0, 0, 0,
+		internalKey, asset.V0, &server.tapParams)
 
-	btc_addr_resp, err := user.lndClient.wallet.NextAddr(context.TODO(), &walletrpc.AddrRequest{
-		Type:   walletrpc.AddressType_TAPROOT_PUBKEY,
-		Change: false,
-	})
-
-	if err != nil {
-		return fmt.Errorf("cannot get btc right address %v", err)
-	}
-
-	btc_addr, err := btcutil.DecodeAddress(btc_addr_resp.Addr, &server.chainParams)
-	if err != nil {
-		return fmt.Errorf("cannot decode address %v", err)
-	}
-
-	// create public key
-	parsedInternalKey, err := schnorr.ParsePubKey(btc_addr.ScriptAddress())
-	if err != nil {
-		return fmt.Errorf("cannot parse Internal Key %v", err)
-	}
+	fundedPkt.Outputs[0].Type = tappsbt.TypeSimple
 
 	// Import watch only wallet
 	_, err = user.lndClient.wallet.ImportPublicKey(context.TODO(), &walletrpc.ImportPublicKeyRequest{
-		PublicKey:   schnorr.SerializePubKey(parsedInternalKey),
+		PublicKey:   schnorr.SerializePubKey(internalKey.PubKey),
 		AddressType: walletrpc.AddressType_TAPROOT_PUBKEY,
 	})
 
@@ -224,18 +196,14 @@ func createFinalChainTransfer(assetId []byte, inputSpendingDetails ArkSpendingDe
 		return fmt.Errorf("cannot import watch only %v", err)
 	}
 
-	addresses := []*address.Tap{asset_addr}
-	// Note: This create a VPacket
-	fundedPkt, err := tappsbt.FromAddresses(addresses, uint32(assetOutputIndex))
-	if err != nil {
-		return fmt.Errorf("cannot generate packet from address %v", err)
-	}
-
 	// Note: This add input details
 	createAndSetInputIntermediate(fundedPkt, inputChainTransfer, assetId)
 
 	// Note: This add output details
-	tapsend.PrepareOutputAssets(context.TODO(), fundedPkt)
+	err = tapsend.PrepareOutputAssets(context.TODO(), fundedPkt)
+	if err != nil {
+		log.Fatalf("cannot prepare Output %v", err)
+	}
 
 	CreateAndInsertAssetWitness(inputSpendingDetails, fundedPkt, user, server)
 
@@ -244,7 +212,7 @@ func createFinalChainTransfer(assetId []byte, inputSpendingDetails ArkSpendingDe
 	if err != nil {
 		return fmt.Errorf("cannot prepare TransferBtc Packet %v", err)
 	}
-	addBtcOutput(transferBtcPkt, uint64(btcAmount), parsedInternalKey)
+	addBtcOutput(transferBtcPkt, uint64(btcAmount), internalKey.PubKey)
 
 	server.CommitVirtualPsbts(
 		transferBtcPkt, vPackets,
@@ -281,7 +249,7 @@ func createFinalChainTransfer(assetId []byte, inputSpendingDetails ArkSpendingDe
 	assetVtxo := VirtualTxOut{TxMsg: unpublishedTransfer.finalTx, AssetProof: unpublishedTransfer.transferProof, Index: assetOutputIndex, vtxoType: ASSET, AssetAmount: inputChainTransfer.assetAmount}
 
 	// derive Btc Unpublished Transfers
-	btcOutputIndex := 2
+	btcOutputIndex := 1
 	btcVtxo := VirtualTxOut{TxMsg: unpublishedTransfer.finalTx, AssetProof: nil, Index: btcOutputIndex, vtxoType: BTC, BtcAmount: btcAmount}
 
 	*vtxoList = append(*vtxoList, assetVtxo, btcVtxo)

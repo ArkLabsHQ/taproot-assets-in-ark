@@ -241,8 +241,8 @@ func (ap *App) ShowVtxos() {
 	log.Printf("\nTransaction Hash: %s", leftLeafAsset.TxMsg.TxID())
 	log.Println("-------------------------------------")
 
-	rightLeafAsset := ap.vtxoList[2]
-	rightLeftBtc := ap.vtxoList[3]
+	rightLeafAsset := ap.vtxoList[4]
+	rightLeftBtc := ap.vtxoList[5]
 	log.Println("------Right Leaf Transaction-----")
 	log.Printf("Left Branch:  Asset Amount = %d", rightLeafAsset.AssetAmount)
 	log.Printf("Right Branch: Btc Amount = %d", rightLeftBtc.BtcAmount)

@@ -109,7 +109,7 @@ services:
       - '12029:10029'
   exituser-tap:
     stop_grace_period: 30s
-    image: tapasset_jsoh_refined1:latest
+    image: tapasset_jsoh_refined2:latest
     container_name: arkasset-exituser-tap-regtest
     hostname: exituser-tap-regtest
     command: >-

@@ -90,7 +90,7 @@ func PublishTransfersAndSubmitProofs(assetId []byte, vtxoList []VirtualTxOut, ge
 		})
 
 		if err != nil {
-			return fmt.Errorf("cannot encode proof file %v", err)
+			return fmt.Errorf("cannot import proof file %v", err)
 		}
 
 	}
