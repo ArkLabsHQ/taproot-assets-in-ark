@@ -1,0 +1,155 @@
+name: arkasset-network-regtest
+services:
+  onboarduser:
+    stop_grace_period: 30s
+    image: polarlightning/lnd:0.18.4-beta
+    container_name: arkasset-onboarduser-regtest
+    hostname: onboarduser-regtest
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: >-
+      lnd --noseedbackup --debuglevel=debug --trickledelay=5000 --alias=onboarduser-regtest
+      --externalip=onboarduser-regtest --tlsextradomain=onboarduser-regtest --tlsextradomain=arkasset-onboarduser-regtest
+      --tlsextradomain=host.docker.internal --listen=0.0.0.0:9735
+      --rpclisten=0.0.0.0:10009 --restlisten=0.0.0.0:8080 --bitcoin.active
+      --bitcoin.regtest --bitcoin.node=bitcoind
+      --bitcoind.rpchost=host.docker.internal --bitcoind.rpcuser=polaruser
+      --bitcoind.rpcpass=polarpass
+      --bitcoind.zmqpubrawblock=tcp://host.docker.internal:28334
+      --bitcoind.zmqpubrawtx=tcp://host.docker.internal:29335
+    restart: always
+    volumes:
+      - ./data/regtest/volumes/lnd/onboarduser:/home/lnd/.lnd
+    expose:
+      - '8080'
+      - '10009'
+      - '9735'
+    ports:
+      - '8081:8080'
+      - '10001:10009'
+      - '9735:9735'
+  exituser:
+    stop_grace_period: 30s
+    image: polarlightning/lnd:0.18.4-beta
+    container_name: arkasset-exituser-regtest
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    hostname: exituser-regtest
+    command: >-
+      lnd --noseedbackup --debuglevel=debug --trickledelay=5000 --alias=exituser-regtest
+      --externalip=exituser-regtest --tlsextradomain=exituser-regtest --tlsextradomain=arkasset-exituser-regtest
+      --tlsextradomain=host.docker.internal --listen=0.0.0.0:9735
+      --rpclisten=0.0.0.0:10009 --restlisten=0.0.0.0:8080 --bitcoin.active
+      --bitcoin.regtest --bitcoin.node=bitcoind
+      --bitcoind.rpchost=host.docker.internal --bitcoind.rpcuser=polaruser
+      --bitcoind.rpcpass=polarpass
+      --bitcoind.zmqpubrawblock=tcp://host.docker.internal:28334
+      --bitcoind.zmqpubrawtx=tcp://host.docker.internal:29335
+    restart: always
+    volumes:
+      - ./data/regtest/volumes/lnd/exituser:/home/lnd/.lnd
+    expose:
+      - '8080'
+      - '10009'
+      - '9735'
+    ports:
+      - '8082:8080'
+      - '10002:10009'
+      - '9736:9735'
+  server:
+    stop_grace_period: 30s
+    image: polarlightning/lnd:0.18.4-beta
+    container_name: arkasset-server-regtest
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    hostname: server-regtest
+    command: >-
+      lnd --noseedbackup --debuglevel=debug --trickledelay=5000 --alias=server-regtest
+      --externalip=server-regtest --tlsextradomain=server-regtest --tlsextradomain=arkasset-server-regtest
+      --tlsextradomain=host.docker.internal --listen=0.0.0.0:9735
+      --rpclisten=0.0.0.0:10009 --restlisten=0.0.0.0:8080 --bitcoin.active
+      --bitcoin.regtest --bitcoin.node=bitcoind
+      --bitcoind.rpchost=host.docker.internal --bitcoind.rpcuser=polaruser
+      --bitcoind.rpcpass=polarpass
+      --bitcoind.zmqpubrawblock=tcp://host.docker.internal:28334
+      --bitcoind.zmqpubrawtx=tcp://host.docker.internal:29335
+    restart: always
+    volumes:
+      - ./data/regtest/volumes/lnd/server:/home/lnd/.lnd
+    expose:
+      - '8080'
+      - '10009'
+      - '9735'
+    ports:
+      - '8083:8080'
+      - '10003:10009'
+      - '9737:9735'
+  onboarduser-tap:
+    stop_grace_period: 30s
+    image: polarlightning/tapd:0.5.0-alpha
+    container_name: arkasset-onboarduser-tap-regtest
+    hostname: onboarduser-tap-regtest
+    command: >-
+      tapd --network=regtest --debuglevel=debug --tlsextradomain=onboarduser-tap-regtest
+      --tlsextradomain=arkasset-onboarduser-tap-regtest --rpclisten=0.0.0.0:10029
+      --restlisten=0.0.0.0:8089 --lnd.host=arkasset-onboarduser-regtest:10009
+      --lnd.macaroonpath=/home/tap/.lnd/data/chain/bitcoin/regtest/admin.macaroon
+      --lnd.tlspath=/home/tap/.lnd/tls.cert --allow-public-uni-proof-courier
+      --allow-public-stats --universe.public-access=rw
+      --universe.sync-all-assets
+    restart: always
+    volumes:
+      - ./data/regtest/volumes/lnd/onboarduser:/home/tap/.lnd
+      - ./data/regtest/volumes/tapd/onboarduser-tap:/home/tap/.tapd
+    expose:
+      - '8089'
+      - '10029'
+    ports:
+      - '8289:8089'
+      - '12029:10029'
+  exituser-tap:
+    stop_grace_period: 30s
+    image: tapasset_jsoh_refined2:latest
+    container_name: arkasset-exituser-tap-regtest
+    hostname: exituser-tap-regtest
+    command: >-
+      tapd --network=regtest --debuglevel=debug --tlsextradomain=exituser-tap-regtest
+      --tlsextradomain=arkasset-exituser-tap-regtest --rpclisten=0.0.0.0:10029
+      --restlisten=0.0.0.0:8089 --lnd.host=arkasset-exituser-regtest:10009
+      --lnd.macaroonpath=/home/tap/.lnd/data/chain/bitcoin/regtest/admin.macaroon
+      --lnd.tlspath=/home/tap/.lnd/tls.cert --allow-public-uni-proof-courier
+      --allow-public-stats --universe.public-access=rw
+      --universe.sync-all-assets
+    restart: always
+    volumes:
+      - ./data/regtest/volumes/lnd/exituser:/home/tap/.lnd
+      - ./data/regtest/volumes/tapd/exituser-tap:/home/tap/.tapd
+    expose:
+      - '8089'
+      - '10029'
+    ports:
+      - '8290:8089'
+      - '12030:10029'
+  server-tap:
+    stop_grace_period: 30s
+    image: tapasset_jsoh_refined1:latest
+    container_name: arkasset-server-tap-regtest
+    hostname: server-tap-regtest
+    command: >-
+      tapd --network=regtest --debuglevel=debug --tlsextradomain=server-tap-regtest
+      --tlsextradomain=arkasset-server-tap-regtest --rpclisten=0.0.0.0:10029
+      --restlisten=0.0.0.0:8089 --lnd.host=arkasset-server-regtest:10009
+      --lnd.macaroonpath=/home/tap/.lnd/data/chain/bitcoin/regtest/admin.macaroon
+      --lnd.tlspath=/home/tap/.lnd/tls.cert --allow-public-uni-proof-courier
+      --allow-public-stats --universe.public-access=rw
+      --universe.sync-all-assets
+    restart: always
+    volumes:
+      - ./data/regtest/volumes/lnd/server:/home/tap/.lnd
+      - ./data/regtest/volumes/tapd/server-tap:/home/tap/.tapd
+    expose:
+      - '8089'
+      - '10029'
+    ports:
+      - '8291:8089'
+      - '12031:10029'

@@ -1,29 +1,39 @@
 package taponark
 
 import (
+	"fmt"
 	"log"
+	"strings"
+	"time"
 
+	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/rpcclient"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightningnetwork/lnd/lntest/wait"
 )
 
 type BitcoinSendTxResult struct {
 	block       *wire.MsgBlock
 	blockHeight int64
+	txindex     int
 }
 
 type BitcoinClient struct {
-	client *rpcclient.Client
+	client      *rpcclient.Client
+	chainParams chaincfg.Params
+	timeout     time.Duration
 }
 
-func GetBitcoinClient() BitcoinClient {
-	// Set up the connection configuration for your btcd RPC server.
+func GetBitcoinClient(config BitcoinClientConfig, chainParams chaincfg.Params, timeout time.Duration) BitcoinClient {
+	hostPort := config.Host + ":" + config.Port
+
 	connCfg := &rpcclient.ConnConfig{
-		Host:         "localhost:18443", // btcd's RPC host:port
-		User:         "polaruser",       // RPC username
-		Pass:         "polarpass",       // RPC password
-		HTTPPostMode: true,              // btcd only supports HTTP POST mode
-		DisableTLS:   true,              // Use TLS if configured
+		Host:         hostPort,        // btcd's RPC host:port
+		User:         config.User,     // RPC username
+		Pass:         config.Password, // RPC password
+		HTTPPostMode: true,            // btcd only supports HTTP POST mode
+		DisableTLS:   true,            // Use TLS if configured
 	}
 
 	// Create a new RPC client instance.
@@ -31,49 +41,77 @@ func GetBitcoinClient() BitcoinClient {
 	if err != nil {
 		log.Fatalf("Error creating new RPC client: %v", err)
 	}
-	return BitcoinClient{client}
+
+	return BitcoinClient{client, chainParams, timeout}
 
 }
 
-func (b BitcoinClient) MineBlock() {
-	address1, err := b.client.GetNewAddress("")
-	if err != nil {
-		log.Fatalf("cannot generate address %v", err)
-	}
-	maxretries := int64(3)
-	_, err = b.client.GenerateToAddress(1, address1, &maxretries)
-	if err != nil {
-		log.Fatalf("cannot generate to address %v", err)
-	}
+func (b BitcoinClient) WaitForConfirmation(txhash chainhash.Hash) error {
+	log.Println("awaiting block to be mined")
+	err := wait.NoError(func() error {
+		txInfo, err := b.client.GetRawTransactionVerbose(&txhash)
+		if err == nil {
+			if txInfo.Confirmations == 0 {
+				return fmt.Errorf("transaction not confirmed with hash %s", txhash.String())
+			}
+		} else {
+			if !strings.Contains(err.Error(), "-5: No such mempool transaction") {
+				return fmt.Errorf("failed to get transaction: %w", err)
+			}
+		}
+		return nil
+	}, b.timeout)
+
+	return err
 }
 
-func (b BitcoinClient) SendTransaction(transaction *wire.MsgTx) BitcoinSendTxResult {
-	_, err := b.client.SendRawTransaction(transaction, true)
+func (b BitcoinClient) SendTransaction(transaction *wire.MsgTx) (BitcoinSendTxResult, error) {
+	txhash, err := b.client.SendRawTransaction(transaction, true)
 	if err != nil {
-		log.Fatalf("cannot send raw transaction %v", err)
+		return BitcoinSendTxResult{}, fmt.Errorf("cannot send raw transaction %v", err)
 	}
 
-	log.Println("transaction_sent")
+	log.Println("awaiting confirmation")
 
-	address1, err := b.client.GetNewAddress("")
-	if err != nil {
-		log.Fatalf("cannot generate address %v", err)
-	}
-	maxretries := int64(3)
-	blockhash, err := b.client.GenerateToAddress(1, address1, &maxretries)
-	if err != nil {
-		log.Fatalf("cannot generate to address %v", err)
-	}
+	var bitcoinSendResult BitcoinSendTxResult
 
-	block, err := b.client.GetBlock(blockhash[0])
-	if err != nil {
-		log.Fatalf("cannot get block %v", err)
-	}
+	err = wait.NoError(func() error {
+		txInfo, err := b.client.GetRawTransactionVerbose(txhash)
+		if err == nil {
+			if txInfo.Confirmations == 0 {
+				return fmt.Errorf("transaction not confirmed with hash %s", txhash.String())
+			}
+		} else {
+			if !strings.Contains(err.Error(), "-5: No such mempool transaction") {
+				return fmt.Errorf("failed to get transaction: %w", err)
+			}
+		}
+		for {
+			blockheight, err := b.client.GetBlockCount()
+			if err != nil {
+				return fmt.Errorf("cannot get blocokheight %v", err)
+			}
 
-	blockheight, err := b.client.GetBlockCount()
-	if err != nil {
-		log.Fatalf("cannot get block height %v", err)
-	}
+			blockhash, err := b.client.GetBlockHash(blockheight)
+			if err != nil {
+				return fmt.Errorf("cannot get block  hash%v", err)
+			}
 
-	return BitcoinSendTxResult{block, blockheight}
+			block, err := b.client.GetBlock(blockhash)
+			if err != nil {
+				return fmt.Errorf("cannot get block  %v", err)
+			}
+
+			for index, txn := range block.Transactions {
+				if txn.TxHash().String() == txhash.String() {
+					bitcoinSendResult = BitcoinSendTxResult{block, blockheight, index}
+					return nil
+				}
+			}
+
+		}
+
+	}, b.timeout)
+
+	return bitcoinSendResult, err
 }

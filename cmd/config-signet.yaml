@@ -1,0 +1,37 @@
+server_tap:
+  host: "localhost"
+  port: "12031"
+  container: "server-tap"
+
+server_lnd:
+  host: "localhost"
+  port: "10003"
+  container: "server"
+
+onboard_user_tap: 
+  host_port: "localhost"
+  port: "12029"
+  container: "onboarduser-tap"
+
+onboard_user_lnd:
+  host_port: "localhost"
+  port: "10001"
+  container: "onboarduser"
+
+exit_user_tap:
+  host: "localhost"
+  port: "12030"
+  container: "exituser-tap"
+
+exit_user_lnd:
+  host_port: "localhost"
+  port: "10002"
+  container: "exituser"
+
+bitcoin_client:
+  host: "bitcoind.signet.arkade.sh"
+  port: "18443"
+  user: "signetarklabs"
+  password: "signetarklabs"
+
+timeout: 30

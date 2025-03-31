@@ -1,0 +1,155 @@
+name: arkasset-network-mutinynet
+services:
+  onboarduser:
+    stop_grace_period: 30s
+    image: polarlightning/lnd:0.18.4-beta
+    container_name: arkasset-onboarduser-mutinynet
+    hostname: onboarduser-mutinynet
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: >-
+      lnd --noseedbackup --debuglevel=debug --trickledelay=5000 --alias=onboarduser-mutinynet
+      --externalip=onboarduser-mutinynet --tlsextradomain=onboarduser-mutinynet --tlsextradomain=arkasset-onboarduser-mutinynet
+      --tlsextradomain=host.docker.internal --listen=0.0.0.0:9735
+      --rpclisten=0.0.0.0:10009 --restlisten=0.0.0.0:8080 --bitcoin.active
+      --bitcoin.signet --bitcoin.node=bitcoind
+      --bitcoind.rpchost=bitcoind.mutinynet.arkade.sh:43782 --bitcoind.rpcuser=ceiwHEbqWI83
+      --bitcoind.rpcpass=DwubwWsoo3
+      --bitcoind.zmqpubrawblock=tcp://bitcoind.mutinynet.arkade.sh:28332
+      --bitcoind.zmqpubrawtx=tcp://bitcoind.mutinynet.arkade.sh:28333
+    restart: always
+    volumes:
+      - ./data/mutinynet/volumes/lnd/onboarduser:/home/lnd/.lnd
+    expose:
+      - '8080'
+      - '10009'
+      - '9735'
+    ports:
+      - '8081:8080'
+      - '10001:10009'
+      - '9735:9735'
+  exituser:
+    stop_grace_period: 30s
+    image: polarlightning/lnd:0.18.4-beta
+    container_name: arkasset-exituser-mutinynet
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    hostname: exituser-mutinynet
+    command: >-
+      lnd --noseedbackup --debuglevel=debug --trickledelay=5000 --alias=exituser-mutinynet
+      --externalip=exituser-mutinynet --tlsextradomain=exituser-mutinynet --tlsextradomain=arkasset-exituser-mutinynet
+      --tlsextradomain=host.docker.internal --listen=0.0.0.0:9735
+      --rpclisten=0.0.0.0:10009 --restlisten=0.0.0.0:8080 --bitcoin.active
+      --bitcoin.signet --bitcoin.node=bitcoind
+      --bitcoind.rpchost=bitcoind.mutinynet.arkade.sh:43782 --bitcoind.rpcuser=ceiwHEbqWI83
+      --bitcoind.rpcpass=DwubwWsoo3
+      --bitcoind.zmqpubrawblock=tcp://bitcoind.mutinynet.arkade.sh:28332
+      --bitcoind.zmqpubrawtx=tcp://bitcoind.mutinynet.arkade.sh:28333
+    restart: always
+    volumes:
+      - ./data/mutinynet/volumes/lnd/exituser:/home/lnd/.lnd
+    expose:
+      - '8080'
+      - '10009'
+      - '9735'
+    ports:
+      - '8082:8080'
+      - '10002:10009'
+      - '9736:9735'
+  server:
+    stop_grace_period: 30s
+    image: polarlightning/lnd:0.18.4-beta
+    container_name: arkasset-server-mutinynet
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    hostname: server-mutinynet
+    command: >-
+      lnd --noseedbackup --debuglevel=debug --trickledelay=5000 --alias=server-mutinynet
+      --externalip=server-mutinynet --tlsextradomain=server-mutinynet --tlsextradomain=arkasset-server-mutinynet
+      --tlsextradomain=host.docker.internal --listen=0.0.0.0:9735
+      --rpclisten=0.0.0.0:10009 --restlisten=0.0.0.0:8080 --bitcoin.active
+      --bitcoin.signet --bitcoin.node=bitcoind
+      --bitcoind.rpchost=bitcoind.mutinynet.arkade.sh:43782 --bitcoind.rpcuser=ceiwHEbqWI83
+      --bitcoind.rpcpass=DwubwWsoo3
+      --bitcoind.zmqpubrawblock=tcp://bitcoind.mutinynet.arkade.sh:28332
+      --bitcoind.zmqpubrawtx=tcp://bitcoind.mutinynet.arkade.sh:28333
+    restart: always
+    volumes:
+      - ./data/mutinynet/volumes/lnd/server:/home/lnd/.lnd
+    expose:
+      - '8080'
+      - '10009'
+      - '9735'
+    ports:
+      - '8083:8080'
+      - '10003:10009'
+      - '9737:9735'
+  onboarduser-tap:
+    stop_grace_period: 30s
+    image: polarlightning/tapd:0.5.0-alpha
+    container_name: arkasset-onboarduser-tap-mutinynet
+    hostname: onboarduser-tap-mutinynet
+    command: >-
+      tapd --network=signet --debuglevel=debug --tlsextradomain=onboarduser-tap-mutinynet
+      --tlsextradomain=arkasset-onboarduser-tap-mutinynet --rpclisten=0.0.0.0:10029
+      --restlisten=0.0.0.0:8089 --lnd.host=arkasset-onboarduser-mutinynet:10009
+      --lnd.macaroonpath=/home/tap/.lnd/data/chain/bitcoin/signet/admin.macaroon
+      --lnd.tlspath=/home/tap/.lnd/tls.cert --allow-public-uni-proof-courier
+      --allow-public-stats --universe.public-access=rw
+      --universe.sync-all-assets
+    restart: always
+    volumes:
+      - ./data/mutinynet/volumes/lnd/onboarduser:/home/tap/.lnd
+      - ./data/mutinynet/volumes/tapd/onboarduser-tap:/home/tap/.tapd
+    expose:
+      - '8089'
+      - '10029'
+    ports:
+      - '8289:8089'
+      - '12029:10029'
+  exituser-tap:
+    stop_grace_period: 30s
+    image: tapasset_jsoh_refined1:latest
+    container_name: arkasset-exituser-tap-mutinynet
+    hostname: exituser-tap-mutinynet
+    command: >-
+      tapd --network=signet --debuglevel=debug --tlsextradomain=exituser-tap-mutinynet
+      --tlsextradomain=arkasset-exituser-tap-mutinynet --rpclisten=0.0.0.0:10029
+      --restlisten=0.0.0.0:8089 --lnd.host=arkasset-exituser-mutinynet:10009
+      --lnd.macaroonpath=/home/tap/.lnd/data/chain/bitcoin/signet/admin.macaroon
+      --lnd.tlspath=/home/tap/.lnd/tls.cert --allow-public-uni-proof-courier
+      --allow-public-stats --universe.public-access=rw
+      --universe.sync-all-assets
+    restart: always
+    volumes:
+      - ./data/mutinynet/volumes/lnd/exituser:/home/tap/.lnd
+      - ./data/mutinynet/volumes/tapd/exituser-tap:/home/tap/.tapd
+    expose:
+      - '8089'
+      - '10029'
+    ports:
+      - '8290:8089'
+      - '12030:10029'
+  server-tap:
+    stop_grace_period: 30s
+    image: tapasset_jsoh_refined1:latest
+    container_name: arkasset-server-tap-mutinynet
+    hostname: server-tap-mutinynet
+    command: >-
+      tapd --network=signet --debuglevel=debug --tlsextradomain=server-tap-mutinynet
+      --tlsextradomain=arkasset-server-tap-mutinynet --rpclisten=0.0.0.0:10029
+      --restlisten=0.0.0.0:8089 --lnd.host=arkasset-server-mutinynet:10009
+      --lnd.macaroonpath=/home/tap/.lnd/data/chain/bitcoin/signet/admin.macaroon
+      --lnd.tlspath=/home/tap/.lnd/tls.cert --allow-public-uni-proof-courier
+      --allow-public-stats --universe.public-access=rw
+      --universe.sync-all-assets
+    restart: always
+    volumes:
+      - ./data/mutinynet/volumes/lnd/server:/home/tap/.lnd
+      - ./data/mutinynet/volumes/tapd/server-tap:/home/tap/.tapd
+    expose:
+      - '8089'
+      - '10029'
+    ports:
+      - '8291:8089'
+      - '12031:10029'

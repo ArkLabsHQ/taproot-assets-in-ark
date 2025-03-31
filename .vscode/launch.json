@@ -10,7 +10,10 @@
             "type": "go",
             "request": "launch",
             "mode": "debug",
-            "program": "cmd/main.go"
+            "program": "cmd/",
+            "console": "integratedTerminal",
+            "args": ["-network", "regtest"]
+
         }
 
     ]

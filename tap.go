@@ -3,10 +3,6 @@ package taponark
 import (
 	"bytes"
 	"context"
-	"crypto/x509"
-	"encoding/hex"
-	"encoding/pem"
-	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -20,6 +16,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/lightninglabs/lndclient"
+	"github.com/lightninglabs/taproot-assets/address"
 	"github.com/lightninglabs/taproot-assets/asset"
 	"github.com/lightninglabs/taproot-assets/commitment"
 	"github.com/lightninglabs/taproot-assets/fn"
@@ -27,7 +24,9 @@ import (
 	"github.com/lightninglabs/taproot-assets/tappsbt"
 	"github.com/lightninglabs/taproot-assets/taprpc"
 	"github.com/lightninglabs/taproot-assets/taprpc/assetwalletrpc"
+	"github.com/lightninglabs/taproot-assets/taprpc/mintrpc"
 	"github.com/lightninglabs/taproot-assets/taprpc/tapdevrpc"
+	"github.com/lightninglabs/taproot-assets/taprpc/universerpc"
 	"github.com/lightninglabs/taproot-assets/tapscript"
 	"github.com/lightninglabs/taproot-assets/tapsend"
 
@@ -38,29 +37,25 @@ import (
 	"github.com/lightningnetwork/lnd/lntest/wait"
 	"github.com/lightningnetwork/lnd/macaroons"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
-	"gopkg.in/macaroon.v2"
 )
 
-func deserializeVPacket(packetBytes []byte) *tappsbt.VPacket {
-	p, err := tappsbt.NewFromRawBytes(bytes.NewReader(packetBytes), false)
-
-	if err != nil {
-
-	}
-	return p
-}
-
 type TapClient struct {
+	universeHost   string
 	client         taprpc.TaprootAssetsClient
 	wallet         assetwalletrpc.AssetWalletClient
-	universeclient tapdevrpc.TapDevClient
+	devclient      tapdevrpc.TapDevClient
+	mintclient     mintrpc.MintClient
+	universeclient universerpc.UniverseClient
 	lndClient      LndClient
 	closeClient    func()
+	chainParams    chaincfg.Params
+	tapParams      address.ChainParams
+	timeout        time.Duration
 }
 
-func InitTapClient(hostPort, tapdport, tlsData, macaroonData string, lndClient LndClient) TapClient {
-	clientConn, err := NewBasicConn(hostPort, tapdport, tlsData, macaroonData)
+func InitTapClient(universeHost string, tapConfig TapClientConfig, lndClient LndClient, tlsCert, adminMacaroon string, chainParams chaincfg.Params, tapParams address.ChainParams, timeout time.Duration) TapClient {
+	hostPort := tapConfig.Host + ":" + tapConfig.Port
+	clientConn, err := NewBasicConn(hostPort, tapConfig.Port, tlsCert, adminMacaroon)
 
 	if err != nil {
 		log.Fatalf("cannot initiate client")
@@ -69,10 +64,23 @@ func InitTapClient(hostPort, tapdport, tlsData, macaroonData string, lndClient L
 	cleanUp := func() {
 		clientConn.Close()
 	}
-	universeclient := tapdevrpc.NewTapDevClient(clientConn)
-	return TapClient{client: taprpc.NewTaprootAssetsClient(clientConn), wallet: assetwalletrpc.NewAssetWalletClient(clientConn), universeclient: universeclient,
-		closeClient: cleanUp,
-		lndClient:   lndClient,
+	devclient := tapdevrpc.NewTapDevClient(clientConn)
+
+	mintclient := mintrpc.NewMintClient(clientConn)
+	universeclient := universerpc.NewUniverseClient(clientConn)
+
+	return TapClient{
+		universeHost:   universeHost,
+		client:         taprpc.NewTaprootAssetsClient(clientConn),
+		wallet:         assetwalletrpc.NewAssetWalletClient(clientConn),
+		devclient:      devclient,
+		mintclient:     mintclient,
+		universeclient: universeclient,
+		closeClient:    cleanUp,
+		lndClient:      lndClient,
+		chainParams:    chainParams,
+		tapParams:      tapParams,
+		timeout:        timeout,
 	}
 
 }
@@ -100,32 +108,131 @@ func (cl *TapClient) GetNewAddress(scriptBranch txscript.TapBranch, assetScriptK
 		TapscriptSibling: encodedBranchPreimage,
 	})
 
+	if err != nil {
+		return nil, fmt.Errorf("cannot Get new Asset Address %v", err)
+	}
+
 	return addr, nil
+}
+
+func (cl *TapClient) GetBtcAddress() (string, error) {
+	addr, err := cl.lndClient.wallet.NextAddr(context.TODO(), &walletrpc.AddrRequest{
+		Type:   walletrpc.AddressType_TAPROOT_PUBKEY,
+		Change: false,
+	})
+
+	if err != nil {
+		return "", fmt.Errorf("cannot Get new Btc Address %v", err)
+	}
+
+	return addr.Addr, nil
 }
 
 func (cl *TapClient) SendAsset(addr *taprpc.Addr) (*taprpc.SendAssetResponse, error) {
 	return cl.client.SendAsset(
 		context.TODO(), &taprpc.SendAssetRequest{
 			TapAddrs: []string{addr.Encoded},
+			FeeRate:  2000,
 		},
 	)
 }
 
-func (cl *TapClient) ExportProof(assetId []byte, scriptKey []byte) *taprpc.ProofFile {
+func (cl *TapClient) ExportProof(assetId []byte, scriptKey []byte) (*taprpc.ProofFile, error) {
 	fullProof, err := cl.client.ExportProof(context.TODO(), &taprpc.ExportProofRequest{
 		AssetId:   assetId,
 		ScriptKey: scriptKey,
 	})
 
 	if err != nil {
-		log.Fatalf("cannot export proof %v", err)
+		return nil, fmt.Errorf("cannot export proof %v", err)
 	}
 
-	return fullProof
+	return fullProof, nil
+}
+
+func (cl *TapClient) CreateAsset() ([]byte, error) {
+	// Mint an asset into a downgraded anchor commitment.
+	manualAssetName, err := RandomHexString(5)
+	if err != nil {
+		return nil, fmt.Errorf("cannot generate random string %v", err)
+	}
+	mintAsset := mintrpc.MintAsset{
+		AssetVersion: 0,
+		AssetType:    taprpc.AssetType_NORMAL,
+		Name:         manualAssetName,
+		AssetMeta: &taprpc.AssetMeta{
+			Data: []byte("not metadata"),
+		},
+		Amount: 100_000,
+	}
+	req := mintrpc.MintAssetRequest{
+		Asset:         &mintAsset,
+		ShortResponse: true,
+	}
+
+	_, err = cl.mintclient.MintAsset(context.TODO(), &req)
+	if err != nil {
+		return nil, fmt.Errorf("cannot mint asset %v", err)
+	}
+
+	_, err = cl.mintclient.FinalizeBatch(context.TODO(), &mintrpc.FinalizeBatchRequest{
+		ShortResponse: true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("cannot finalise batch %v", err)
+	}
+
+	assetId, err := cl.IncomingMintEvent(manualAssetName)
+
+	if err != nil {
+		return nil, fmt.Errorf("cannot get asset %v", err)
+	}
+
+	return assetId, nil
+}
+
+func (cl *TapClient) GetBalance(assetId []byte) (uint64, int64, error) {
+	assetbalanceResponse, err := cl.client.ListBalances(context.TODO(), &taprpc.ListBalancesRequest{
+		GroupBy: &taprpc.ListBalancesRequest_AssetId{
+			AssetId: true,
+		},
+		AssetFilter: assetId,
+	})
+	if err != nil {
+		return 0, 0, fmt.Errorf("cannot get asset balance %v", err)
+	}
+
+	assetBalance := uint64(0)
+
+	for _, balance := range assetbalanceResponse.AssetBalances {
+		if assetId == nil {
+			break
+		}
+		if bytes.Equal(balance.AssetGenesis.AssetId, assetId) {
+			assetBalance = balance.Balance
+			break
+		}
+
+	}
+
+	btcBalanceResponse, err := cl.lndClient.wallet.ListAddresses(context.TODO(), &walletrpc.ListAddressesRequest{})
+
+	if err != nil {
+		return 0, 0, fmt.Errorf("cannot get btc balance %v", err)
+	}
+
+	btcBalance := int64(0)
+	for _, bc := range btcBalanceResponse.AccountWithAddresses {
+		for _, ac := range bc.Addresses {
+			btcBalance += ac.Balance
+		}
+	}
+
+	return assetBalance, btcBalance, nil
 }
 
 func (cl *TapClient) GetNextKeys() (asset.ScriptKey,
-	keychain.KeyDescriptor) {
+	keychain.KeyDescriptor, error) {
 
 	scriptKeyDesc, err := cl.wallet.NextScriptKey(
 		context.TODO(), &assetwalletrpc.NextScriptKeyRequest{
@@ -134,12 +241,12 @@ func (cl *TapClient) GetNextKeys() (asset.ScriptKey,
 	)
 
 	if err != nil {
-		log.Fatal(err)
+		return asset.ScriptKey{}, keychain.KeyDescriptor{}, fmt.Errorf("cannot get script key %v", err)
 	}
 
 	scriptKey, err := taprpc.UnmarshalScriptKey(scriptKeyDesc.ScriptKey)
 	if err != nil {
-		log.Fatal(err)
+		return asset.ScriptKey{}, keychain.KeyDescriptor{}, fmt.Errorf("cannot unmarshal script key %v", err)
 	}
 
 	internalKeyDesc, err := cl.wallet.NextInternalKey(
@@ -148,21 +255,64 @@ func (cl *TapClient) GetNextKeys() (asset.ScriptKey,
 		},
 	)
 	if err != nil {
-		log.Fatal(err)
+		return asset.ScriptKey{}, keychain.KeyDescriptor{}, fmt.Errorf("cannot get internal key %v", err)
 	}
 
 	internalKey, err := taprpc.UnmarshalKeyDescriptor(
 		internalKeyDesc.InternalKey,
 	)
 	if err != nil {
-		log.Fatal(err)
+		return asset.ScriptKey{}, keychain.KeyDescriptor{}, fmt.Errorf("cannot unmarshal internal key %v", err)
 	}
 
-	return *scriptKey, internalKey
+	return *scriptKey, internalKey, nil
 }
 
-func (cl *TapClient) IncomingTransferEvent(addr *taprpc.Addr) {
-	_ = wait.NoError(func() error {
+func (cl *TapClient) Sync() error {
+	_, err := cl.universeclient.SyncUniverse(context.TODO(), &universerpc.SyncRequest{
+		UniverseHost: cl.universeHost,
+		SyncMode:     universerpc.UniverseSyncMode_SYNC_FULL,
+	})
+
+	if err != nil {
+		return fmt.Errorf("cannot sync %v", err)
+	}
+
+	return nil
+}
+
+func (cl *TapClient) IncomingMintEvent(assetName string) ([]byte, error) {
+	var assetId []byte
+	err := wait.NoError(func() error {
+		resp, err := cl.client.ListAssets(
+			context.TODO(), &taprpc.ListAssetRequest{
+				IncludeSpent:            false,
+				IncludeLeased:           false,
+				IncludeUnconfirmedMints: false,
+			},
+		)
+		if err != nil {
+			return err
+		}
+
+		if len(resp.Assets) == 0 {
+			return fmt.Errorf("no assets found")
+		}
+
+		for _, asset := range resp.Assets {
+			if asset.AssetGenesis.Name == assetName {
+				assetId = asset.AssetGenesis.AssetId
+				return nil
+			}
+		}
+		return fmt.Errorf("new assets not found")
+	}, cl.timeout)
+
+	return assetId, err
+}
+
+func (cl *TapClient) IncomingTransferEvent(addr *taprpc.Addr) error {
+	err := wait.NoError(func() error {
 		resp, err := cl.client.AddrReceives(
 			context.TODO(), &taprpc.AddrReceivesRequest{
 				FilterAddr: addr.Encoded,
@@ -181,20 +331,15 @@ func (cl *TapClient) IncomingTransferEvent(addr *taprpc.Addr) {
 			return fmt.Errorf("got status %v, wanted %v",
 				resp.Events[0].Status, taprpc.AddrEventStatus_ADDR_EVENT_STATUS_COMPLETED)
 		}
-
-		log.Println("Got address event ")
-
 		return nil
-	}, time.Minute)
+	}, cl.timeout)
 
-	// if err != nil {
-	// 	log.Fatal("cannot fetch address event")
-	// }
+	return err
 }
 
 func (cl *TapClient) createMuSig2Session(
 	localKey keychain.KeyDescriptor, otherKey []byte,
-	localNonces musig2.Nonces, otherNonces [][]byte) []byte {
+	localNonces musig2.Nonces, otherNonces [][]byte) ([]byte, error) {
 
 	version := signrpc.MuSig2Version_MUSIG2_VERSION_V100RC2
 	sess, err := cl.lndClient.client.MuSig2CreateSession(
@@ -217,16 +362,16 @@ func (cl *TapClient) createMuSig2Session(
 	)
 
 	if err != nil {
-		log.Fatal(err)
+		return nil, fmt.Errorf("cannot create MuSig2 Session %v", err)
 	}
 
-	return sess.SessionId
+	return sess.SessionId, nil
 }
 
 func (cl *TapClient) combineSigs(sessID,
 	otherPartialSig []byte, leafToSign txscript.TapLeaf,
 	tree *txscript.IndexedTapScriptTree,
-	controlBlock *txscript.ControlBlock) wire.TxWitness {
+	controlBlock *txscript.ControlBlock) (wire.TxWitness, error) {
 
 	resp, err := cl.lndClient.client.MuSig2CombineSig(
 		context.TODO(), &signrpc.MuSig2CombineSigRequest{
@@ -236,7 +381,7 @@ func (cl *TapClient) combineSigs(sessID,
 	)
 
 	if err != nil {
-		log.Fatalf("Cannot combine signature %v", err)
+		return wire.TxWitness{}, fmt.Errorf("cannot combine signature %v", err)
 	}
 
 	for _, leaf := range tree.LeafMerkleProofs {
@@ -247,7 +392,7 @@ func (cl *TapClient) combineSigs(sessID,
 
 	controlBlockBytes, err := controlBlock.ToBytes()
 	if err != nil {
-		log.Fatalf("Cannot Get control byte %v", err)
+		return wire.TxWitness{}, fmt.Errorf("cannot Get control byte %v", err)
 	}
 
 	commitmentWitness := make(wire.TxWitness, 3)
@@ -255,12 +400,12 @@ func (cl *TapClient) combineSigs(sessID,
 	commitmentWitness[1] = leafToSign.Script
 	commitmentWitness[2] = controlBlockBytes
 
-	return commitmentWitness
+	return commitmentWitness, nil
 }
 
 // Note: Commits Outputs pkscripts
 func (cl *TapClient) CommitVirtualPsbts(
-	fundedPacket *psbt.Packet, activePackets []*tappsbt.VPacket) {
+	fundedPacket *psbt.Packet, activePackets []*tappsbt.VPacket) error {
 
 	outputCommitments := make(tappsbt.OutputCommitments)
 
@@ -269,7 +414,7 @@ func (cl *TapClient) CommitVirtualPsbts(
 	for _, vPkt := range activePackets {
 		err := cl.commitPacket(vPkt, outputCommitments)
 		if err != nil {
-			log.Fatal(err)
+			return fmt.Errorf("error committing packet: %v", err)
 		}
 	}
 
@@ -279,7 +424,7 @@ func (cl *TapClient) CommitVirtualPsbts(
 			fundedPacket, vPkt, outputCommitments,
 		)
 		if err != nil {
-			log.Fatalf("error updating taproot output "+
+			return fmt.Errorf("error updating taproot output "+
 				"keys: %v", err)
 		}
 	}
@@ -295,13 +440,13 @@ func (cl *TapClient) CommitVirtualPsbts(
 				vPkt, outputCommitments, vOutIdx, activePackets,
 			)
 			if err != nil {
-				log.Fatal(err)
+				return fmt.Errorf("error creating proof suffix: %v", err)
 			}
 
 			vPkt.Outputs[vOutIdx].ProofSuffix = proofSuffix
 		}
 	}
-
+	return nil
 }
 
 // commitPacket creates the output commitments for a virtual packet and merges
@@ -384,55 +529,9 @@ func (cl *TapClient) commitPacket(vPkt *tappsbt.VPacket,
 	return nil
 }
 
-func (cl *TapClient) LogAndPublish(
-	btcPkt *psbt.Packet, activeAssets []*tappsbt.VPacket,
-	passiveAssets []*tappsbt.VPacket,
-	commitResp *assetwalletrpc.CommitVirtualPsbtsResponse) *taprpc.SendAssetResponse {
-
-	var buf bytes.Buffer
-	err := btcPkt.Serialize(&buf)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	request := &assetwalletrpc.PublishAndLogRequest{
-		AnchorPsbt:        buf.Bytes(),
-		VirtualPsbts:      make([][]byte, len(activeAssets)),
-		PassiveAssetPsbts: make([][]byte, len(passiveAssets)),
-		ChangeOutputIndex: commitResp.ChangeOutputIndex,
-		LndLockedUtxos:    commitResp.LndLockedUtxos,
-	}
-
-	for idx := range activeAssets {
-		request.VirtualPsbts[idx], err = tappsbt.Encode(
-			activeAssets[idx],
-		)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-	}
-	for idx := range passiveAssets {
-		request.PassiveAssetPsbts[idx], err = tappsbt.Encode(
-			passiveAssets[idx],
-		)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-	}
-
-	resp, err := cl.wallet.PublishAndLogTransfer(context.TODO(), request)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	return resp
-}
-
 func (cl *TapClient) partialSignBtcTransfer(pkt *psbt.Packet, length int,
 	keys []keychain.KeyDescriptor, controlBlockBytesList [][]byte,
-	tapLeaves []txscript.TapLeaf) [][]byte {
+	tapLeaves []txscript.TapLeaf) ([][]byte, error) {
 
 	// The lnd SignPsbt RPC doesn't really understand multi-sig yet, we
 	// cannot specify multiple keys that need to sign. So what we do here
@@ -448,7 +547,7 @@ func (cl *TapClient) partialSignBtcTransfer(pkt *psbt.Packet, length int,
 		}}
 		signInput := &pkt.Inputs[i]
 		derivation, trDerivation := tappsbt.Bip32DerivationFromKeyDesc(
-			keys[i], chaincfg.RegressionNetParams.HDCoinType,
+			keys[i], cl.chainParams.HDCoinType,
 		)
 		trDerivation.LeafHashes = [][]byte{fn.ByteSlice(tapLeaves[i].TapHash())}
 		signInput.Bip32Derivation = []*psbt.Bip32Derivation{derivation}
@@ -461,21 +560,14 @@ func (cl *TapClient) partialSignBtcTransfer(pkt *psbt.Packet, length int,
 
 	err := pkt.SanityCheck()
 	if err != nil {
-		log.Fatal(err)
+		return nil, fmt.Errorf("error sanity checking packet: %v", err)
 	}
 
 	var buf bytes.Buffer
 	err = pkt.Serialize(&buf)
 	if err != nil {
-		log.Fatal(err)
+		return nil, fmt.Errorf("error serializing packet: %v", err)
 	}
-
-	b64, err := pkt.B64Encode()
-	if err != nil {
-		log.Fatalf("failed to Encode pkt")
-
-	}
-	log.Println(b64)
 
 	resp, err := cl.lndClient.wallet.SignPsbt(
 		context.TODO(), &walletrpc.SignPsbtRequest{
@@ -483,13 +575,13 @@ func (cl *TapClient) partialSignBtcTransfer(pkt *psbt.Packet, length int,
 		},
 	)
 	if err != nil {
-		log.Fatal(err)
+		return nil, fmt.Errorf("error signing psbt: %v", err)
 	}
 	result, err := psbt.NewFromRawBytes(
 		bytes.NewReader(resp.SignedPsbt), false,
 	)
 	if err != nil {
-		log.Fatal(err)
+		return nil, fmt.Errorf("error parsing signed psbt: %v", err)
 	}
 	// Make sure the input we wanted to sign for was actually signed.
 	// require.Contains(t, resp.SignedInputs, inputIndex)
@@ -499,14 +591,17 @@ func (cl *TapClient) partialSignBtcTransfer(pkt *psbt.Packet, length int,
 		signatures[i] = result.Inputs[i].TaprootScriptSpendSig[0].Signature
 	}
 
-	return signatures
+	return signatures, nil
 }
 
 func (cl *TapClient) partialSignAssetTransfer(assetTransferPacket *tappsbt.VPacket, assetLeaf *txscript.TapLeaf, localScriptKeyDescriptor keychain.KeyDescriptor,
-	localNonces *musig2.Nonces, remoteScriptKey *secp256k1.PublicKey, remoteNonce [66]byte) ([]byte, []byte) {
-	sessID := cl.createMuSig2Session(localScriptKeyDescriptor, remoteScriptKey.SerializeCompressed(), *localNonces,
+	localNonces *musig2.Nonces, remoteScriptKey *secp256k1.PublicKey, remoteNonce [66]byte) ([]byte, []byte, error) {
+	sessID, err := cl.createMuSig2Session(localScriptKeyDescriptor, remoteScriptKey.SerializeCompressed(), *localNonces,
 		[][]byte{remoteNonce[:]},
 	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("cannot create MuSig2 Session %v", err)
+	}
 
 	partialSigner := &muSig2PartialSigner{
 		sessID:     sessID,
@@ -520,7 +615,7 @@ func (cl *TapClient) partialSignAssetTransfer(assetTransferPacket *tappsbt.VPack
 	derivation, trDerivation := tappsbt.Bip32DerivationFromKeyDesc(
 		keychain.KeyDescriptor{
 			PubKey: localScriptKeyDescriptor.PubKey,
-		}, chaincfg.RegressionNetParams.HDCoinType,
+		}, cl.chainParams.HDCoinType,
 	)
 	vIn.Bip32Derivation = []*psbt.Bip32Derivation{derivation}
 	vIn.TaprootBip32Derivation = []*psbt.TaprootBip32Derivation{
@@ -528,16 +623,16 @@ func (cl *TapClient) partialSignAssetTransfer(assetTransferPacket *tappsbt.VPack
 	}
 
 	// Note: This also adds Split Commitment Root to Split Asset
-	err := tapsend.SignVirtualTransaction(
+	err = tapsend.SignVirtualTransaction(
 		assetTransferPacket, partialSigner, partialSigner,
 	)
 	if err != nil {
-		log.Fatalf("error is one %v", err)
+		return nil, nil, fmt.Errorf("cannot Sign Virtual Transaction %v", err)
 	}
 
 	isSplit, err := assetTransferPacket.HasSplitCommitment()
 	if err != nil {
-		log.Fatalf("error is two %v", err)
+		return nil, nil, fmt.Errorf("cannot check for split commitment %v", err)
 	}
 
 	// Identify new output asset. For splits, the new asset that received
@@ -546,7 +641,7 @@ func (cl *TapClient) partialSignAssetTransfer(assetTransferPacket *tappsbt.VPack
 	if isSplit {
 		splitOut, err := assetTransferPacket.SplitRootOutput()
 		if err != nil {
-			log.Fatalf("error is three %v", err)
+			return nil, nil, fmt.Errorf("cannot get split root output %v", err)
 		}
 
 		newAsset = splitOut.Asset
@@ -556,7 +651,7 @@ func (cl *TapClient) partialSignAssetTransfer(assetTransferPacket *tappsbt.VPack
 	// ignore.
 	partialSig := newAsset.PrevWitnesses[0].TxWitness[0][32:]
 
-	return partialSig, sessID
+	return partialSig, sessID, nil
 }
 
 func NewBasicConn(tapdHost string, tapdPort string, tlsPath, macPath string) (*grpc.ClientConn, error) {
@@ -596,46 +691,6 @@ func NewBasicConn(tapdHost string, tapdPort string, tlsPath, macPath string) (*g
 	}
 
 	return conn, nil
-}
-
-// parseTLSAndMacaroon
-func parseTLSAndMacaroon(tlsData, macData string) (credentials.TransportCredentials,
-	*macaroon.Macaroon, error) {
-
-	tlsBytes, err := hex.DecodeString(tlsData)
-
-	if err != nil {
-		return nil, nil, err
-	}
-	block, _ := pem.Decode(tlsBytes)
-	if block == nil || block.Type != "CERTIFICATE" {
-		return nil, nil, errors.New("failed to decode PEM block " +
-			"containing tls certificate")
-	}
-	cert, err := x509.ParseCertificate(block.Bytes)
-	if err != nil {
-		return nil, nil, err
-	}
-	pool := x509.NewCertPool()
-	pool.AddCert(cert)
-	// Load the specified TLS certificate and build transport
-	// credentials.
-	creds := credentials.NewClientTLSFromCert(pool, "")
-
-	var macBytes []byte
-	mac := &macaroon.Macaroon{}
-	// Load the specified macaroon file.
-	macBytes, err = hex.DecodeString(macData)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	if err = mac.UnmarshalBinary(macBytes); err != nil {
-		return nil, nil, fmt.Errorf("unable to decode macaroon: %v",
-			err)
-	}
-
-	return creds, mac, nil
 }
 
 type muSig2PartialSigner struct {
@@ -701,23 +756,23 @@ func createAndSetAssetInput(vPkt *tappsbt.VPacket, idx int,
 	// we'll add the relevant information to the virtual TX's input.
 	outpoint, err := wire.NewOutPointFromString(roundDetails.Anchor.Outpoint)
 	if err != nil {
-		log.Fatalf("cannot decode outpoint %w", err)
+		return fmt.Errorf("cannot decode outpoint %w", err)
 	}
 
 	proof, err := proof.Decode(roundDetails.NewProofBlob)
 	if err != nil {
-		log.Fatalf("cannot decode proof %w", err)
+		return fmt.Errorf("cannot decode proof %w", err)
 	}
 
 	internalKey, err := secp256k1.ParsePubKey(roundDetails.Anchor.InternalKey)
 	if err != nil {
-		log.Fatalf("cannot parse Pubkey %w", err)
+		return fmt.Errorf("cannot parse Pubkey %w", err)
 	}
 
 	tapKey := txscript.ComputeTaprootOutputKey(internalKey, roundDetails.Anchor.MerkleRoot)
 	outputScript, err := tapscript.PayToTaprootScript(tapKey)
 	if err != nil {
-		log.Fatalf("cannot get TaprootScript %w", err)
+		return fmt.Errorf("cannot get TaprootScript %w", err)
 	}
 
 	prevID := asset.PrevID{
@@ -746,7 +801,7 @@ func createAndSetAssetInput(vPkt *tappsbt.VPacket, idx int,
 	return nil
 }
 
-func createAndSetInputIntermediate(vPkt *tappsbt.VPacket, idx int,
+func createAndSetInputIntermediate(vPkt *tappsbt.VPacket,
 	roundDetails ChainTransfer, assetId []byte) error {
 
 	// At this point, we have a valid "coin" to spend in the commitment, so
@@ -754,9 +809,9 @@ func createAndSetInputIntermediate(vPkt *tappsbt.VPacket, idx int,
 	tapKey := txscript.ComputeTaprootOutputKey(roundDetails.internalKey, roundDetails.merkleRoot)
 	outputScript, err := tapscript.PayToTaprootScript(tapKey)
 	if err != nil {
-		log.Fatalf("cannot get TaprootScript %v", err)
+		return fmt.Errorf("cannot get TaprootScript %v", err)
 	}
-
+	idx := 0
 	prevID := asset.PrevID{
 		OutPoint:  *roundDetails.outpoint,
 		ID:        asset.ID(assetId),

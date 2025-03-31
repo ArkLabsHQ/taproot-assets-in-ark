@@ -1,28 +1,35 @@
 package taponark
 
 import (
-	"log"
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+	"sync"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/psbt"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/lightninglabs/taproot-assets/asset"
 	"github.com/lightninglabs/taproot-assets/commitment"
 	"github.com/lightninglabs/taproot-assets/tappsbt"
+	"github.com/lightninglabs/taproot-assets/taprpc"
 )
 
-const BOARDING_TRANSFER_OUTPUT_INDEX = 1
-const ASSET_BOARDING_INPUT_INDEX = 0
-const BTC_BOARDING_INPUT_INDEX = 1
-const TRANSFER_INPUT_INDEX = 0
-const LEFT_TRANSFER_OUTPUT_INDEX = 1
-const RIGHT_TRANSFER_OUTPUT_INDEX = 2
+const BOARDING_ASSET_TRANSFER_OUTPUT_INDEX = 1
+const ASSET_ANCHOR_ROUND_ROOT_INPUT_INDEX = 0
+
 const CHANGE_OUTPUT_INDEX = 0
 
-func DeriveUnpublishedChainTransfer(btcPacket *psbt.Packet, transferOutput *tappsbt.VOutput) ChainTransfer {
+const FEE uint64 = 10_000
+const DUMMY_ASSET_BTC_AMOUNT = 1_000
+const ROUND_ROOT_ANCHOR_OUTPUT_INDEX = 0
+const ROUND_ROOT_ASSET_OUTPUT_INDEX = 0
+
+func DeriveUnpublishedChainTransfer(btcPacket *psbt.Packet, transferOutput *tappsbt.VOutput) (ChainTransfer, error) {
 	internalKey := transferOutput.AnchorOutputInternalKey
 	scriptKey := transferOutput.ScriptKey
 	merkleRoot := tappsbt.ExtractCustomField(
@@ -33,12 +40,12 @@ func DeriveUnpublishedChainTransfer(btcPacket *psbt.Packet, transferOutput *tapp
 	)
 	taprootSibling, _, err := commitment.MaybeEncodeTapscriptPreimage(transferOutput.AnchorOutputTapscriptSibling)
 	if err != nil {
-		log.Fatalf("cannot encode tapscript preimage %v", err)
+		return ChainTransfer{}, fmt.Errorf("cannot encode tapscript preimage %v", err)
 	}
 
 	finalTx, err := psbt.Extract(btcPacket)
 	if err != nil {
-		log.Fatalf("cannot extract final transaction %v", err)
+		return ChainTransfer{}, fmt.Errorf("cannot extract final transaction %v", err)
 	}
 	txhash := transferOutput.ProofSuffix.AnchorTx.TxHash()
 
@@ -47,7 +54,7 @@ func DeriveUnpublishedChainTransfer(btcPacket *psbt.Packet, transferOutput *tapp
 	anchorValue := btcPacket.UnsignedTx.TxOut[transferOutput.AnchorOutputIndex].Value
 	assetAmount := transferOutput.Amount
 
-	return ChainTransfer{finalTx, outpoint, transferOutput.ProofSuffix, merkleRoot, taprootSibling, internalKey, scriptKey, anchorValue, taprootAssetRoot, assetAmount}
+	return ChainTransfer{finalTx, outpoint, transferOutput.ProofSuffix, merkleRoot, taprootSibling, internalKey, scriptKey, anchorValue, taprootAssetRoot, assetAmount}, nil
 
 }
 
@@ -72,7 +79,7 @@ func extractControlBlock(arkBtcScript ArkBtcScript, taprootAssetRoot []byte) *tx
 	return btcControlBlock
 }
 
-func addBtcInput(transferPacket *psbt.Packet, btcTransferDetails BtcTransferDetails) {
+func addBtcInputToPSBT(transferPacket *psbt.Packet, btcTransferDetails BtcTransferDetails) {
 	signingDetails := btcTransferDetails
 
 	transferPacket.UnsignedTx.TxIn = append(
@@ -93,11 +100,14 @@ func addBtcInput(transferPacket *psbt.Packet, btcTransferDetails BtcTransferDeta
 
 }
 
-func addBtcOutput(transferPacket *psbt.Packet, amount uint64, taprootKey *btcec.PublicKey, rawInternalKey []byte) {
+func addBtcOutput(transferPacket *psbt.Packet, amount uint64, internalKey *btcec.PublicKey) error {
+
+	taprootKey := txscript.ComputeTaprootOutputKey(internalKey, []byte{})
+
 	pkscript, err := txscript.PayToTaprootScript(taprootKey)
 
 	if err != nil {
-		log.Fatalf("cannot convert address to script %v", err)
+		return fmt.Errorf("cannot convert address to script %v", err)
 	}
 
 	txout := wire.TxOut{
@@ -110,8 +120,55 @@ func addBtcOutput(transferPacket *psbt.Packet, amount uint64, taprootKey *btcec.
 	)
 
 	transferPacket.Outputs = append(transferPacket.Outputs, psbt.POutput{
-		TaprootInternalKey: rawInternalKey,
+		TaprootInternalKey: schnorr.SerializePubKey(internalKey),
 		TaprootTapTree:     nil,
 	})
 
+	return nil
+}
+
+// waitForTransfers concurrently waits for both the BTC confirmation and the asset transfer event.
+func waitForTransfers(bitcoinClient *BitcoinClient, serverTapClient *TapClient, txHash chainhash.Hash, assetAddr *taprpc.Addr) error {
+	var wg sync.WaitGroup
+	errCh := make(chan error, 2)
+
+	// Wait for BTC confirmation concurrently.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := bitcoinClient.WaitForConfirmation(txHash); err != nil {
+			errCh <- fmt.Errorf("BTC confirmation failed: %w", err)
+		}
+	}()
+
+	// Wait for the asset transfer event concurrently.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := serverTapClient.IncomingTransferEvent(assetAddr); err != nil {
+			errCh <- fmt.Errorf("asset transfer event failed: %w", err)
+		}
+	}()
+
+	// Wait for both routines to finish.
+	wg.Wait()
+	close(errCh)
+
+	// If any error occurred, return the first one encountered.
+	for err := range errCh {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// RandomHexString generates a random hexadecimal string of length n*2.
+func RandomHexString(n int) (string, error) {
+	// n bytes will result in n*2 hex characters.
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }
