@@ -228,24 +228,24 @@ func (ap *App) ShowVtxos() {
 	intermediateLeft := ap.vtxoList[0]
 	intermediateRight := ap.vtxoList[1]
 	log.Println("------Intermediate Transaction-----")
-	log.Printf("Left Branch:  Asset Amount = %d, Btc Amount = %d", intermediateLeft.AssetAmount, intermediateLeft.BtcAmount)
-	log.Printf("Right Branch:  Asset Amount = %d, Btc Amount = %d", intermediateRight.AssetAmount, intermediateRight.BtcAmount)
+	log.Printf("Left Output:  Asset Amount = %d, Btc Amount = %d", intermediateLeft.AssetAmount, intermediateLeft.BtcAmount)
+	log.Printf("Right Output:  Asset Amount = %d, Btc Amount = %d", intermediateRight.AssetAmount, intermediateRight.BtcAmount)
 	log.Printf("\nTransaction Hash: %s", intermediateLeft.TxMsg.TxID())
 	log.Println("-------------------------------------")
 
 	leftLeafAsset := ap.vtxoList[2]
 	leftLeftBtc := ap.vtxoList[3]
 	log.Println("------Left Leaf Transaction-----")
-	log.Printf("Left Branch:  Asset Amount = %d", leftLeafAsset.AssetAmount)
-	log.Printf("Right Branch: Btc Amount = %d", leftLeftBtc.BtcAmount)
+	log.Printf("Left Output:  Asset Amount = %d", leftLeafAsset.AssetAmount)
+	log.Printf("Right Output: Btc Amount = %d", leftLeftBtc.BtcAmount)
 	log.Printf("\nTransaction Hash: %s", leftLeafAsset.TxMsg.TxID())
 	log.Println("-------------------------------------")
 
 	rightLeafAsset := ap.vtxoList[4]
 	rightLeftBtc := ap.vtxoList[5]
 	log.Println("------Right Leaf Transaction-----")
-	log.Printf("Left Branch:  Asset Amount = %d", rightLeafAsset.AssetAmount)
-	log.Printf("Right Branch: Btc Amount = %d", rightLeftBtc.BtcAmount)
+	log.Printf("Left Output:  Asset Amount = %d", rightLeafAsset.AssetAmount)
+	log.Printf("Right Output: Btc Amount = %d", rightLeftBtc.BtcAmount)
 	log.Printf("\nTransaction Hash: %s", rightLeftBtc.TxMsg.TxID())
 	log.Println("-------------------------------------")
 }

@@ -3,6 +3,7 @@ package taponark
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"fmt"
 	"log"
 
@@ -37,7 +38,7 @@ func OnboardUser(assetId []byte, asset_amnt uint64, btc_amnt uint64, boardingCli
 		return ArkBoardingTransfer{}, fmt.Errorf("cannot send asset %v", err)
 	}
 
-	log.Printf("Boarding Asset TxId %s", sendResp.Transfer.AnchorTxBlockHash.String())
+	log.Printf("Boarding Asset TxId %s", hex.EncodeToString(sendResp.Transfer.AnchorTxHash))
 
 	// Insert Control Block
 	assetTransferOutput := sendResp.Transfer.Outputs[BOARDING_ASSET_TRANSFER_OUTPUT_INDEX]
