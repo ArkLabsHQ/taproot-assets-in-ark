@@ -99,7 +99,7 @@ end
  #### Things To Consider:
   - All leaves output goes to the Exit User both token and bitcoin
   - Both Asset and Bitcoin are split equally between transaction outputs
-  - Fees are excluded from Transaction flow, but a fee of **10_000 sats** is added in all transactions
+  - Fees are excluded from Transaction flow, but a fee of **10_000 sats** is included in all transactions
     
 
 ## 🛠 REPL Usage
@@ -239,10 +239,7 @@ taponark/
 
 ## 🧠 Motivation
 
-This proof-of-concept explores the feasibility of integrating Taproot Assets into the Ark Protocol. By leveraging a Dockerized network and an interactive REPL, the project aims to:
-- Demonstrate on-chain/off-chain asset interactions.
-- Validate asset proofs and metadata using Taproot.
-- Lay the groundwork for future integration with Ark’s smart contract and privacy features.
+This proof-of-concept explores the feasibility of integrating Taproot Assets into the Ark Protocol. By leveraging a Dockerized network and an interactive REPL
 
 ---
 
