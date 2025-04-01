@@ -214,6 +214,8 @@ Within the REPL, you can issue commands to interact with the Taproot Assets and 
   Goodbye!
   ```
 
+  **Note**: Please ensure that a minimum total of 200,000 sats is deposited for the Onboarding User, divided into two installments of 100,000 sats each. This deposit is essential for both Minting and creating the Boarding Transaction.
+
 ---
 
 ## 📁 Project Structure
@@ -237,9 +239,14 @@ taponark/
 
 ---
 
+## Considerations
+
+To simplify the import of asset proofs needed for our proof-of-concept, we employed a modified Tapd daemon that exposes a development RPC called **ImportProof**.
+
+
 ## 🧠 Motivation
 
-This proof-of-concept explores the feasibility of integrating Taproot Assets into the Ark Protocol. By leveraging a Dockerized network and an interactive REPL
+This proof-of-concept explores the feasibility of integrating Taproot Assets into the Ark Protocol. By leveraging a Dockerized network and an interactive REPL.
 
 ---
 
