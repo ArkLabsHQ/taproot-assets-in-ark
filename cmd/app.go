@@ -19,7 +19,7 @@ type App struct {
 	exitUserTapClient       taponark.TapClient
 	bitcoinClient           taponark.BitcoinClient
 	boardingTransferDetails *taponark.ArkBoardingTransfer
-	vtxoList                []taponark.VirtualTxOut
+	round                   taponark.Round
 	roundRootProofFile      []byte
 	assetId                 []byte
 }
@@ -204,21 +204,20 @@ func (ap *App) Board() {
 func (ap *App) ConstructRound() {
 	roundTreeLevel := uint64(2)
 
-	vtxoList, roundRootProofFile, err := taponark.CreateRoundTransfer(*ap.boardingTransferDetails, ap.assetId, &ap.exitUserTapClient, &ap.serverTapClient, roundTreeLevel, ap.bitcoinClient)
+	round, err := taponark.ConstructAndBroadcastRound(ap.assetId, *ap.boardingTransferDetails, &ap.exitUserTapClient, &ap.serverTapClient, roundTreeLevel, ap.bitcoinClient)
 	if err != nil {
 		log.Printf("Error creating round transfer: %v", err)
 		log.Println("-------------------------------------")
 		return
 	}
 
-	ap.vtxoList = vtxoList
-	ap.roundRootProofFile = roundRootProofFile
+	ap.round = round
 }
 
-func (ap *App) UploadProofs() {
-	err := taponark.PublishTransfersAndSubmitProofs(ap.assetId, ap.vtxoList, ap.boardingTransferDetails.AssetTransferDetails.GenesisPoint, ap.roundRootProofFile, &ap.exitUserTapClient, &ap.bitcoinClient)
+func (ap *App) ExitRound() {
+	err := taponark.ExitRoundAndAppendProof(ap.round, &ap.bitcoinClient)
 	if err != nil {
-		log.Printf("Error uploading proofs: %v", err)
+		log.Printf("Error Exitng round or appending round: %v", err)
 		log.Println("-------------------------------------")
 		return
 	}
