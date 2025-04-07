@@ -3,14 +3,13 @@ package taponark
 import (
 	"context"
 	"fmt"
-	"log"
 
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/taproot-assets/proof"
 	"github.com/lightninglabs/taproot-assets/taprpc/tapdevrpc"
 )
 
-func UpdateAndAppendProof(proofFile []byte, finalTx *wire.MsgTx, transferProof *proof.Proof, sendTxResult BitcoinSendTxResult) ([]byte, error) {
+func AppendProof(proofFile []byte, finalTx *wire.MsgTx, transferProof *proof.Proof, sendTxResult BitcoinSendTxResult) ([]byte, error) {
 	decodedFullProofFile, err := proof.DecodeFile(proofFile)
 	if err != nil {
 		return nil, fmt.Errorf("cannot fully decode proof file %v", err)
@@ -42,60 +41,10 @@ func UpdateAndAppendProof(proofFile []byte, finalTx *wire.MsgTx, transferProof *
 
 }
 
-func PublishTransfersAndSubmitProofs(assetId []byte, vtxoList []VirtualTxOut, genesisPoint string, rootProof []byte, user *TapClient, bitcoinClient *BitcoinClient) error {
-	updatedProofList := make([][]byte, 0)
-
-	rootSentMessage, err := bitcoinClient.SendTransaction(vtxoList[0].TxMsg)
-	if err != nil {
-		return fmt.Errorf("cannot send transaction %v", err)
-	}
-
-	processParentAndChild := func(parentSentMessage BitcoinSendTxResult, parent, leftchild VirtualTxOut, proofFile []byte) error {
-		updatedProof, err := UpdateAndAppendProof(proofFile, parent.TxMsg, parent.AssetProof, parentSentMessage)
-		if err != nil {
-			return fmt.Errorf("cannot update proofs %v", err)
-		}
-
-		sentLeftMessage, err := bitcoinClient.SendTransaction(leftchild.TxMsg)
-		if err != nil {
-			return fmt.Errorf("cannot send transaction %v", err)
-		}
-
-		updatedLeftProof, err := UpdateAndAppendProof(updatedProof, leftchild.TxMsg, leftchild.AssetProof, sentLeftMessage)
-		if err != nil {
-			return fmt.Errorf("cannot update proofs %v", err)
-		}
-
-		updatedProofList = append(updatedProofList, updatedLeftProof)
-
-		return nil
-	}
-
-	err = processParentAndChild(rootSentMessage, vtxoList[0], vtxoList[2], rootProof)
-	if err != nil {
-		return err
-	}
-
-	err = processParentAndChild(rootSentMessage, vtxoList[1], vtxoList[4], rootProof)
-	if err != nil {
-		return err
-	}
-
-	log.Println("Exit Proof appended")
-
-	for _, updatedProof := range updatedProofList {
-		_, err := user.devclient.ImportProof(context.TODO(), &tapdevrpc.ImportProofRequest{
-			ProofFile:    updatedProof,
-			GenesisPoint: genesisPoint,
-		})
-
-		if err != nil {
-			return fmt.Errorf("cannot import proof file %v", err)
-		}
-
-	}
-
-	log.Println("Exit Proof Imported")
-
-	return nil
+func SubmitProof(genesisPoint string, proofFile []byte, user *TapClient) error {
+	_, err := user.devclient.ImportProof(context.TODO(), &tapdevrpc.ImportProofRequest{
+		ProofFile:    proofFile,
+		GenesisPoint: genesisPoint,
+	})
+	return err
 }

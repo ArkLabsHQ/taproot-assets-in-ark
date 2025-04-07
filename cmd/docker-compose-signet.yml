@@ -124,7 +124,7 @@ services:
       USERID: ${USERID:-1000}
       GROUPID: ${GROUPID:-1000}
     stop_grace_period: 30s
-    image: tapasset_jsoh_refined1:latest
+    image: bitspend/taprootasset:v5
     container_name: arkasset-exituser-tap
     hostname: exituser-tap
     command: >-
@@ -150,7 +150,7 @@ services:
       USERID: ${USERID:-1000}
       GROUPID: ${GROUPID:-1000}
     stop_grace_period: 30s
-    image: tapasset_jsoh_refined1:latest
+    image: bitspend/taprootasset:v5
     container_name: arkasset-server-tap
     hostname: server-tap
     command: >-

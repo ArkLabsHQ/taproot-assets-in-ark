@@ -29,7 +29,7 @@ const DUMMY_ASSET_BTC_AMOUNT = 1_000
 const ROUND_ROOT_ANCHOR_OUTPUT_INDEX = 0
 const ROUND_ROOT_ASSET_OUTPUT_INDEX = 0
 
-func DeriveUnpublishedChainTransfer(btcPacket *psbt.Packet, transferOutput *tappsbt.VOutput) (ChainTransfer, error) {
+func ExtractColoredTransfer(btcPacket *psbt.Packet, transferOutput *tappsbt.VOutput) (ColoredTransfer, error) {
 	internalKey := transferOutput.AnchorOutputInternalKey
 	scriptKey := transferOutput.ScriptKey
 	merkleRoot := tappsbt.ExtractCustomField(
@@ -40,12 +40,12 @@ func DeriveUnpublishedChainTransfer(btcPacket *psbt.Packet, transferOutput *tapp
 	)
 	taprootSibling, _, err := commitment.MaybeEncodeTapscriptPreimage(transferOutput.AnchorOutputTapscriptSibling)
 	if err != nil {
-		return ChainTransfer{}, fmt.Errorf("cannot encode tapscript preimage %v", err)
+		return ColoredTransfer{}, fmt.Errorf("cannot encode tapscript preimage %v", err)
 	}
 
 	finalTx, err := psbt.Extract(btcPacket)
 	if err != nil {
-		return ChainTransfer{}, fmt.Errorf("cannot extract final transaction %v", err)
+		return ColoredTransfer{}, fmt.Errorf("cannot extract final transaction %v", err)
 	}
 	txhash := transferOutput.ProofSuffix.AnchorTx.TxHash()
 
@@ -54,7 +54,7 @@ func DeriveUnpublishedChainTransfer(btcPacket *psbt.Packet, transferOutput *tapp
 	anchorValue := btcPacket.UnsignedTx.TxOut[transferOutput.AnchorOutputIndex].Value
 	assetAmount := transferOutput.Amount
 
-	return ChainTransfer{finalTx, outpoint, transferOutput.ProofSuffix, merkleRoot, taprootSibling, internalKey, scriptKey, anchorValue, taprootAssetRoot, assetAmount}, nil
+	return ColoredTransfer{finalTx, outpoint, transferOutput.ProofSuffix, merkleRoot, taprootSibling, internalKey, scriptKey, anchorValue, taprootAssetRoot, assetAmount}, nil
 
 }
 

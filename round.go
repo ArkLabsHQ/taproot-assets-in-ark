@@ -6,253 +6,189 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/lightninglabs/taproot-assets/asset"
 	"github.com/lightninglabs/taproot-assets/commitment"
 	"github.com/lightninglabs/taproot-assets/tappsbt"
 	"github.com/lightninglabs/taproot-assets/tapsend"
 	"github.com/lightningnetwork/lnd/keychain"
-	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
 )
 
-func CreateRoundTransfer(boardingTransfer ArkBoardingTransfer, assetId []byte, user, server *TapClient, level uint64, bitcoinClient BitcoinClient) ([]VirtualTxOut, []byte, error) {
-	vtxoList := make([]VirtualTxOut, 0)
+type Round struct {
+	roundTransfer          ColoredTransfer
+	RoundTree              RoundTree
+	assetTransferProofFile []byte
+	GenesisPoint           string
+}
 
-	roundRootSpendingDetails, err := CreateRoundSpendingDetails(user, server)
+func ConstructAndBroadcastRound(assetId []byte, onboardTransfer ArkBoardingTransfer, user, server *TapClient, bitcoinClient BitcoinClient) (Round, error) {
+	roundSpendingDetails, err := CreateRoundSpendingDetails(user, server)
 	if err != nil {
-		return nil, nil, fmt.Errorf("cannot create Round Spending Details %v", err)
+		return Round{}, fmt.Errorf("cannot create Round Spending Details %v", err)
 	}
 
-	roundRootTransfer, err := ConstructRoundIOFromBoarding(assetId, boardingTransfer, roundRootSpendingDetails, server)
+	// Create Asset Transfer
+	boardingAssetAmount := onboardTransfer.AssetTransferDetails.assetBoardingAmount
+	onboardAssetSpendingDetails := onboardTransfer.AssetTransferDetails.ArkSpendingDetails
+
+	// Prepare an asset Transfer Packet
+	assetTransferPkt := tappsbt.ForInteractiveSend(
+		asset.ID(assetId),
+		boardingAssetAmount,
+		roundSpendingDetails.arkAssetScript.tapScriptKey,
+		0, 0, 0,
+		keychain.KeyDescriptor{
+			PubKey: asset.NUMSPubKey,
+		},
+		asset.V0,
+		&server.tapParams)
+
+	// Insert Ark round Spending Script Path
+	scriptBranchPreimage := commitment.NewPreimageFromBranch(roundSpendingDetails.arkBtcScript.Branch)
+	assetTransferPkt.Outputs[ROUND_ROOT_ASSET_OUTPUT_INDEX].AnchorOutputTapscriptSibling = &scriptBranchPreimage
+
+	// Add asset input details
+	insertAssetInputInPacket(assetTransferPkt, ASSET_ANCHOR_ROUND_ROOT_INPUT_INDEX, onboardTransfer.AssetTransferDetails.AssetTransferOutput, assetId)
+	err = tapsend.PrepareOutputAssets(context.TODO(), assetTransferPkt)
 	if err != nil {
-		return nil, nil, fmt.Errorf("cannot construct Round IO From Boarding %v", err)
+		return Round{}, fmt.Errorf("cannot prepare Output %v", err)
+	}
+	// Insert asset witness details
+	InsertAssetTransferWitness(onboardAssetSpendingDetails, assetTransferPkt, onboardTransfer.user, server)
+	assetTransferPktList := []*tappsbt.VPacket{assetTransferPkt}
+	transferPsbt, err := tapsend.PrepareAnchoringTemplate(assetTransferPktList)
+	if err != nil {
+		return Round{}, fmt.Errorf("cannot prepare TransferBtc Packet %v", err)
+	}
+
+	//2. Add Boarded Btc Input
+	btcAmount := onboardTransfer.btcTransferDetails.btcBoardingAmount + DUMMY_ASSET_BTC_AMOUNT - FEE
+	transferPsbt.UnsignedTx.TxOut[ROUND_ROOT_ANCHOR_OUTPUT_INDEX].Value = int64(btcAmount)
+	addBtcInputToPSBT(transferPsbt, onboardTransfer.btcTransferDetails)
+
+	// Commit Asset Transfer To Psbt
+	server.CommitVirtualPsbts(
+		transferPsbt, assetTransferPktList,
+	)
+
+	inputLength := 2
+	spendingDetailsLists := make([]ArkSpendingDetails, inputLength)
+	spendingDetailsLists[0] = onboardTransfer.AssetTransferDetails.ArkSpendingDetails
+	spendingDetailsLists[1] = onboardTransfer.btcTransferDetails.arkSpendingDetails
+
+	// Sign BTC inputs
+	btcAssetTxWitnessList, err := CreateBtcWitness(spendingDetailsLists, transferPsbt, inputLength, onboardTransfer.user, server)
+	if err != nil {
+		return Round{}, fmt.Errorf("cannot Create BTC Witness %v", err)
+	}
+
+	for i := 0; i < inputLength; i++ {
+		var buf bytes.Buffer
+		err = psbt.WriteTxWitness(&buf, btcAssetTxWitnessList[i])
+		if err != nil {
+			return Round{}, fmt.Errorf("failed to write BTC witness for input %v", err)
+		}
+		transferPsbt.Inputs[i].FinalScriptWitness = buf.Bytes()
+	}
+
+	// Finalise Transfer PSBT
+	if err = psbt.MaybeFinalizeAll(transferPsbt); err != nil {
+		return Round{}, fmt.Errorf("failed to finalise Psbt %v", err)
+	}
+
+	roundTransfer, err := ExtractColoredTransfer(transferPsbt, assetTransferPktList[0].Outputs[0])
+	if err != nil {
+		return Round{}, fmt.Errorf("cannot Derive Unpublished Chain Transfer %v", err)
 	}
 
 	// Insert Control Block
-	btcControlBlock := extractControlBlock(roundRootSpendingDetails.arkBtcScript, roundRootTransfer.taprootAssetRoot)
-	roundRootSpendingDetails.arkBtcScript.controlBlock = btcControlBlock
+	btcControlBlock := extractControlBlock(roundSpendingDetails.arkBtcScript, roundTransfer.taprootAssetRoot)
+	roundSpendingDetails.arkBtcScript.controlBlock = btcControlBlock
 
-	// Create Level 1 Branch Transaction
-	createIntermediateChainTransfer(assetId, roundRootSpendingDetails, roundRootTransfer, level-1, user, server, &vtxoList)
-
-	sendTxResult, err := bitcoinClient.SendTransaction(roundRootTransfer.finalTx)
+	// construct a two level roundtree
+	roundTree, err := ConstructRoundTree(roundTransfer, roundSpendingDetails, assetId, user, server, 2)
 	if err != nil {
-		return nil, nil, fmt.Errorf("cannot send transaction %v", err)
+		return Round{}, fmt.Errorf("cannot construct round tree, %v", err)
 	}
 
-	rootProofFile, err := UpdateAndAppendProof(boardingTransfer.AssetTransferDetails.RawProofFile, roundRootTransfer.finalTx, roundRootTransfer.transferProof, sendTxResult)
+	sendTxResult, err := bitcoinClient.SendTransaction(roundTransfer.finalTx)
 	if err != nil {
-		return nil, nil, fmt.Errorf("cannot update and append proof %v", err)
+		return Round{}, fmt.Errorf("failed to broadcast round transaction %v", err)
 	}
 
-	log.Printf("\nRound Transaction Hash %s", roundRootTransfer.finalTx.TxHash().String())
+	rootProofFile, err := AppendProof(onboardTransfer.AssetTransferDetails.RawProofFile, roundTransfer.finalTx, roundTransfer.transferProof, sendTxResult)
+	if err != nil {
+		return Round{}, fmt.Errorf("failed to update round proof %v", err)
+	}
 
-	return vtxoList, rootProofFile, nil
+	genesisPoint := onboardTransfer.AssetTransferDetails.GenesisPoint
 
+	log.Printf("\nRound Transaction Hash %s", roundTransfer.finalTx.TxHash().String())
+
+	return Round{
+		roundTransfer,
+		roundTree,
+		rootProofFile,
+		genesisPoint,
+	}, nil
 }
 
-func createIntermediateChainTransfer(assetId []byte, inputSpendingDetails ArkSpendingDetails, inputChainTransfer ChainTransfer, level uint64, user, server *TapClient, vtxoList *[]VirtualTxOut) error {
-	if level == 0 {
-		return createFinalChainTransfer(assetId, inputSpendingDetails, inputChainTransfer, user, server, vtxoList)
+func ExitRoundAndAppendProof(round Round, bitcoinClient *BitcoinClient) ([][]byte, error) {
+	assetVtxoProofList := make([][]byte, 0)
+
+	var traverseRecursively func(node *RoundTreeNode, parentProofFile []byte) error
+
+	traverseRecursively = func(node *RoundTreeNode, parentProofFile []byte) error {
+		sendTransactionResult, err := bitcoinClient.SendTransaction(node.Transaction)
+		if err != nil {
+			return fmt.Errorf("failed to broadcast exit  transaction: %w", err)
+		}
+
+		if node.NodeType == NodeTypeLeaf {
+			for _, output := range []NodeOutput{node.LeftOutput, node.RightOutput} {
+				if output.OutputType == OutputTypeAsset {
+					if parentProofFile == nil {
+						return fmt.Errorf("parent proof file is nil for leaf node")
+					}
+					assetProofFile, err := AppendProof(parentProofFile, node.Transaction, output.AssetProof, sendTransactionResult)
+					if err != nil {
+						return err
+					}
+					assetVtxoProofList = append(assetVtxoProofList, assetProofFile)
+				}
+			}
+			return nil
+		}
+		for _, output := range []NodeOutput{node.LeftOutput, node.RightOutput} {
+			if output.OutputType == OutputTypeColored {
+				if parentProofFile == nil {
+					return fmt.Errorf("parent proof file is nil for leaf node")
+				}
+				assetProofFile, err := AppendProof(parentProofFile, node.Transaction, output.AssetProof, sendTransactionResult)
+				if err != nil {
+					return err
+				}
+				err = traverseRecursively(output.Node, assetProofFile)
+				if err != nil {
+					return fmt.Errorf("failed to traverse branch transaction: %w", err)
+				}
+			} else {
+				err = traverseRecursively(output.Node, nil)
+				if err != nil {
+					return fmt.Errorf("failed to traverse branch transaction: %w", err)
+				}
+			}
+
+		}
+		return nil
+
 	}
 
-	leftOutputSpendingDetails, err := CreateRoundSpendingDetails(user, server)
+	err := traverseRecursively(round.RoundTree.Root, round.assetTransferProofFile)
 	if err != nil {
-		return fmt.Errorf("cannot create Round Spending Details %v", err)
+		return nil, fmt.Errorf("failed to traverse round tree: %w", err)
 	}
 
-	rightOutputSpendingDetail, err := CreateRoundSpendingDetails(user, server)
-	if err != nil {
-		return fmt.Errorf("cannot create Round Spending Details %v", err)
-	}
+	return assetVtxoProofList, nil
 
-	branchBtcAmount := (inputChainTransfer.anchorValue - int64(FEE)) / 2 // Fee
-	branchAssetAmount := inputChainTransfer.assetAmount / 2
-
-	fundedPkt := tappsbt.ForInteractiveSend(asset.ID(assetId), branchAssetAmount, leftOutputSpendingDetails.arkAssetScript.tapScriptKey, 0, 0, 0,
-		keychain.KeyDescriptor{
-			PubKey: asset.NUMSPubKey,
-		}, asset.V0, &server.tapParams)
-
-	fundedPkt.Outputs[0].Type = tappsbt.TypeSplitRoot
-	leftBranchScriptBranchPreimage := commitment.NewPreimageFromBranch(leftOutputSpendingDetails.arkBtcScript.Branch)
-	fundedPkt.Outputs[0].AnchorOutputTapscriptSibling = &leftBranchScriptBranchPreimage
-
-	tappsbt.AddOutput(fundedPkt, branchAssetAmount, rightOutputSpendingDetail.arkAssetScript.tapScriptKey, 1,
-		keychain.KeyDescriptor{
-			PubKey: asset.NUMSPubKey,
-		}, asset.V0)
-	rightBranchScriptBranchPreimage := commitment.NewPreimageFromBranch(rightOutputSpendingDetail.arkBtcScript.Branch)
-	fundedPkt.Outputs[1].AnchorOutputTapscriptSibling = &rightBranchScriptBranchPreimage
-
-	// Note: This add input details
-	createAndSetInputIntermediate(fundedPkt, inputChainTransfer, assetId)
-	// Note: This add output details
-	err = tapsend.PrepareOutputAssets(context.TODO(), fundedPkt)
-	if err != nil {
-		return fmt.Errorf("cannot prepare Output %v", err)
-	}
-
-	CreateAndInsertAssetWitness(inputSpendingDetails, fundedPkt, user, server)
-
-	// Add Btc Output Amount
-	vPackets := []*tappsbt.VPacket{fundedPkt}
-	transferBtcPkt, err := tapsend.PrepareAnchoringTemplate(vPackets)
-	if err != nil {
-		return fmt.Errorf("cannot prepare TransferBtc Packet %v", err)
-	}
-	transferBtcPkt.UnsignedTx.TxOut[0].Value = int64(branchBtcAmount)
-	transferBtcPkt.UnsignedTx.TxOut[1].Value = int64(branchBtcAmount)
-
-	//Adds Fees and commit
-	server.CommitVirtualPsbts(
-		transferBtcPkt, vPackets,
-	)
-
-	inputLength := 1
-	spendingDetailsLists := make([]ArkSpendingDetails, inputLength)
-	spendingDetailsLists[0] = inputSpendingDetails
-
-	// Sign BTC Input
-	btcTxWitness, err := CreateBtcWitness(spendingDetailsLists, transferBtcPkt, inputLength, user, server)
-	if err != nil {
-		return fmt.Errorf("cannot Create BTC Witness %v", err)
-	}
-
-	var buf bytes.Buffer
-	err = psbt.WriteTxWitness(&buf, btcTxWitness[0])
-	if err != nil {
-		return fmt.Errorf("cannot write Tx Witness %v", err)
-	}
-
-	transferBtcPkt.Inputs[0].FinalScriptWitness = buf.Bytes()
-	// Finalise PSST
-	err = psbt.MaybeFinalizeAll(transferBtcPkt)
-
-	if err != nil {
-		return fmt.Errorf("failed to finaliste Psbt %v", err)
-	}
-
-	// derive Left and Right Unpublished Transfers
-	leftUnpublishedTransfer, err := DeriveUnpublishedChainTransfer(transferBtcPkt, vPackets[0].Outputs[0])
-	if err != nil {
-		return fmt.Errorf("cannot derive Unpublished Chain Transfer %v", err)
-	}
-
-	rightUnpublishedTransfer, err := DeriveUnpublishedChainTransfer(transferBtcPkt, vPackets[0].Outputs[1])
-	if err != nil {
-		return fmt.Errorf("cannot derive Unpublished Chain Transfer %v", err)
-	}
-
-	// derive Left and Right Control Blocks
-	leftBtcControlBlock := extractControlBlock(leftOutputSpendingDetails.arkBtcScript, leftUnpublishedTransfer.taprootAssetRoot)
-	rightBtcControlBlock := extractControlBlock(rightOutputSpendingDetail.arkBtcScript, rightUnpublishedTransfer.taprootAssetRoot)
-
-	// derive and  Left and Right Proofs Details to the ProofList
-	leftOutputProofTxMsg := VirtualTxOut{TxMsg: leftUnpublishedTransfer.finalTx, AssetProof: leftUnpublishedTransfer.transferProof, Index: 0, vtxoType: BRANCH, BtcAmount: branchBtcAmount, AssetAmount: branchAssetAmount}
-	rightOutputProofTxMsg := VirtualTxOut{TxMsg: rightUnpublishedTransfer.finalTx, AssetProof: rightUnpublishedTransfer.transferProof, Index: 1, vtxoType: BRANCH, BtcAmount: branchBtcAmount, AssetAmount: branchAssetAmount}
-	*vtxoList = append(*vtxoList, leftOutputProofTxMsg, rightOutputProofTxMsg)
-
-	leftOutputSpendingDetails.arkBtcScript.controlBlock = leftBtcControlBlock
-	rightOutputSpendingDetail.arkBtcScript.controlBlock = rightBtcControlBlock
-
-	// Recursively create the next level of transfers
-	err = createIntermediateChainTransfer(assetId, leftOutputSpendingDetails, leftUnpublishedTransfer, level-1, user, server, vtxoList)
-	if err != nil {
-		return fmt.Errorf("cannot create Intermediate Chain Transfer %v", err)
-	}
-
-	err = createIntermediateChainTransfer(assetId, rightOutputSpendingDetail, rightUnpublishedTransfer, level-1, user, server, vtxoList)
-	if err != nil {
-		return fmt.Errorf("cannot create Intermediate Chain Transfer %v", err)
-	}
-
-	return nil
-}
-
-func createFinalChainTransfer(assetId []byte, inputSpendingDetails ArkSpendingDetails, inputChainTransfer ChainTransfer, user, server *TapClient, vtxoList *[]VirtualTxOut) error {
-	assetOutputIndex := 0
-	changeAssetInBtc := DUMMY_ASSET_BTC_AMOUNT
-	btcAmount := inputChainTransfer.anchorValue - int64(changeAssetInBtc) - int64(FEE)
-	// TODO (Joshua Kindly Improve to only have two output)
-	scriptKey, internalKey, err := user.GetNextKeys()
-	if err != nil {
-		return fmt.Errorf("can get next keys %v", err)
-	}
-
-	fundedPkt := tappsbt.ForInteractiveSend(asset.ID(assetId), inputChainTransfer.assetAmount, scriptKey, 0, 0, 0,
-		internalKey, asset.V0, &server.tapParams)
-
-	fundedPkt.Outputs[0].Type = tappsbt.TypeSimple
-
-	// Import watch only wallet
-	_, err = user.lndClient.wallet.ImportPublicKey(context.TODO(), &walletrpc.ImportPublicKeyRequest{
-		PublicKey:   schnorr.SerializePubKey(internalKey.PubKey),
-		AddressType: walletrpc.AddressType_TAPROOT_PUBKEY,
-	})
-
-	if err != nil {
-		return fmt.Errorf("cannot import watch only %v", err)
-	}
-
-	// Note: This add input details
-	createAndSetInputIntermediate(fundedPkt, inputChainTransfer, assetId)
-
-	// Note: This add output details
-	err = tapsend.PrepareOutputAssets(context.TODO(), fundedPkt)
-	if err != nil {
-		log.Fatalf("cannot prepare Output %v", err)
-	}
-
-	CreateAndInsertAssetWitness(inputSpendingDetails, fundedPkt, user, server)
-
-	vPackets := []*tappsbt.VPacket{fundedPkt}
-	transferBtcPkt, err := tapsend.PrepareAnchoringTemplate(vPackets)
-	if err != nil {
-		return fmt.Errorf("cannot prepare TransferBtc Packet %v", err)
-	}
-	addBtcOutput(transferBtcPkt, uint64(btcAmount), internalKey.PubKey)
-
-	server.CommitVirtualPsbts(
-		transferBtcPkt, vPackets,
-	)
-
-	inputLength := 1
-	spendingDetailsLists := make([]ArkSpendingDetails, inputLength)
-	spendingDetailsLists[0] = inputSpendingDetails
-
-	btcTxWitness, err := CreateBtcWitness(spendingDetailsLists, transferBtcPkt, inputLength, user, server)
-	if err != nil {
-		return fmt.Errorf("cannot Create BTC Witness %v", err)
-	}
-
-	var buf bytes.Buffer
-	err = psbt.WriteTxWitness(&buf, btcTxWitness[0])
-	if err != nil {
-		return fmt.Errorf("failed to write BTC witness for input %v", err)
-	}
-
-	transferBtcPkt.Inputs[0].FinalScriptWitness = buf.Bytes()
-
-	// Finalise PSBT
-	err = psbt.MaybeFinalizeAll(transferBtcPkt)
-	if err != nil {
-		return fmt.Errorf("failed to finaliste Psbt %v", err)
-	}
-
-	// derive Asset Unpublished Transfers
-	unpublishedTransfer, err := DeriveUnpublishedChainTransfer(transferBtcPkt, vPackets[0].Outputs[assetOutputIndex])
-	if err != nil {
-		return fmt.Errorf("cannot derive Unpublished Chain Transfer %v", err)
-	}
-	assetVtxo := VirtualTxOut{TxMsg: unpublishedTransfer.finalTx, AssetProof: unpublishedTransfer.transferProof, Index: assetOutputIndex, vtxoType: ASSET, AssetAmount: inputChainTransfer.assetAmount}
-
-	// derive Btc Unpublished Transfers
-	btcOutputIndex := 1
-	btcVtxo := VirtualTxOut{TxMsg: unpublishedTransfer.finalTx, AssetProof: nil, Index: btcOutputIndex, vtxoType: BTC, BtcAmount: btcAmount}
-
-	*vtxoList = append(*vtxoList, assetVtxo, btcVtxo)
-
-	return nil
 }

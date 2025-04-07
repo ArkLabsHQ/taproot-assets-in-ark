@@ -109,7 +109,7 @@ services:
       - '12029:10029'
   exituser-tap:
     stop_grace_period: 30s
-    image: tapasset_jsoh_refined1:latest
+    image: bitspend/taprootasset:v5
     container_name: arkasset-exituser-tap-mutinynet
     hostname: exituser-tap-mutinynet
     command: >-
@@ -132,7 +132,7 @@ services:
       - '12030:10029'
   server-tap:
     stop_grace_period: 30s
-    image: tapasset_jsoh_refined1:latest
+    image: bitspend/taprootasset:v5
     container_name: arkasset-server-tap-mutinynet
     hostname: server-tap-mutinynet
     command: >-
