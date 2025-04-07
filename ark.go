@@ -55,7 +55,7 @@ type ArkBtcKeys struct {
 	serverInternalKey keychain.KeyDescriptor
 }
 
-type ChainTransfer struct {
+type ColoredTransfer struct {
 	finalTx          *wire.MsgTx
 	outpoint         *wire.OutPoint
 	transferProof    *proof.Proof

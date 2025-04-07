@@ -22,6 +22,7 @@ type App struct {
 	round                   taponark.Round
 	roundRootProofFile      []byte
 	assetId                 []byte
+	assetVtxoProofList      [][]byte
 }
 
 func DeriveLndTlsAndMacaroonHex(container string, network string) (string, string) {
@@ -142,7 +143,7 @@ func Init(network string) App {
 	bitcoinClient := taponark.GetBitcoinClient(config.BitcoinClient, chainParams, timeout)
 
 	log.Println("All clients Initilised")
-	return App{serverTapClient, boardingUserTapClient, exitUserTapClient, bitcoinClient, nil, []taponark.VirtualTxOut{}, nil, nil}
+	return App{serverTapClient, boardingUserTapClient, exitUserTapClient, bitcoinClient, nil, taponark.Round{}, nil, nil, nil}
 }
 
 // Onboarder Mint
@@ -170,6 +171,7 @@ func (ap *App) Mint() {
 	ap.assetId = assetId
 	hexEncodedString := hex.EncodeToString(assetId)
 	log.Printf("\nAsset ID: %s", hexEncodedString)
+	log.Println("Minting Complete")
 	log.Println("-------------------------------------")
 }
 
@@ -198,13 +200,13 @@ func (ap *App) Board() {
 		return
 	}
 	ap.boardingTransferDetails = &boardingTransferDetails
+	log.Println("Boarding User Complete")
+	log.Println("------------------------------------------------")
 
 }
 
 func (ap *App) ConstructRound() {
-	roundTreeLevel := uint64(2)
-
-	round, err := taponark.ConstructAndBroadcastRound(ap.assetId, *ap.boardingTransferDetails, &ap.exitUserTapClient, &ap.serverTapClient, roundTreeLevel, ap.bitcoinClient)
+	round, err := taponark.ConstructAndBroadcastRound(ap.assetId, *ap.boardingTransferDetails, &ap.exitUserTapClient, &ap.serverTapClient, ap.bitcoinClient)
 	if err != nil {
 		log.Printf("Error creating round transfer: %v", err)
 		log.Println("-------------------------------------")
@@ -212,41 +214,29 @@ func (ap *App) ConstructRound() {
 	}
 
 	ap.round = round
+	log.Println("Round Construction Complete")
+	log.Println("------------------------------------------------")
+}
+
+func (ap *App) ShowRoundTree() {
+
+	taponark.PrintTree(ap.round.RoundTree.Root, "", true)
+
+	log.Println("Print Of Round Complete")
+	log.Println("------------------------------------------------")
 }
 
 func (ap *App) ExitRound() {
-	err := taponark.ExitRoundAndAppendProof(ap.round, &ap.bitcoinClient)
+	assetVtxoProofList, err := taponark.ExitRoundAndAppendProof(ap.round, &ap.bitcoinClient)
 	if err != nil {
 		log.Printf("Error Exitng round or appending round: %v", err)
 		log.Println("-------------------------------------")
 		return
 	}
-}
+	ap.assetVtxoProofList = assetVtxoProofList
+	log.Println("Exit Transactions Broadcasted and Token Transfer Proof Appended")
+	log.Println("------------------------------------------------")
 
-func (ap *App) ShowVtxos() {
-	intermediateLeft := ap.vtxoList[0]
-	intermediateRight := ap.vtxoList[1]
-	log.Println("------Intermediate Transaction-----")
-	log.Printf("Left Output:  Asset Amount = %d, Btc Amount = %d", intermediateLeft.AssetAmount, intermediateLeft.BtcAmount)
-	log.Printf("Right Output:  Asset Amount = %d, Btc Amount = %d", intermediateRight.AssetAmount, intermediateRight.BtcAmount)
-	log.Printf("\nTransaction Hash: %s", intermediateLeft.TxMsg.TxID())
-	log.Println("-------------------------------------")
-
-	leftLeafAsset := ap.vtxoList[2]
-	leftLeftBtc := ap.vtxoList[3]
-	log.Println("------Left Leaf Transaction-----")
-	log.Printf("Left Output:  Asset Amount = %d", leftLeafAsset.AssetAmount)
-	log.Printf("Right Output: Btc Amount = %d", leftLeftBtc.BtcAmount)
-	log.Printf("\nTransaction Hash: %s", leftLeafAsset.TxMsg.TxID())
-	log.Println("-------------------------------------")
-
-	rightLeafAsset := ap.vtxoList[4]
-	rightLeftBtc := ap.vtxoList[5]
-	log.Println("------Right Leaf Transaction-----")
-	log.Printf("Left Output:  Asset Amount = %d", rightLeafAsset.AssetAmount)
-	log.Printf("Right Output: Btc Amount = %d", rightLeftBtc.BtcAmount)
-	log.Printf("\nTransaction Hash: %s", rightLeftBtc.TxMsg.TxID())
-	log.Println("-------------------------------------")
 }
 
 func (ap *App) ShowBalance() {
@@ -274,4 +264,25 @@ func (ap *App) ShowBalance() {
 	log.Printf("Asset Balance = %d", exitUserAssetBalance)
 	log.Printf("Btc Balance = %d", exitUserBtcBalance)
 	log.Println("-------------------------------------")
+}
+
+func (ap *App) UploadTokenVtxoProof() {
+	length := len(ap.assetVtxoProofList)
+	if length == 0 {
+		log.Println("No Vtxo Proofs to Upload")
+		log.Println("-------------------------------------")
+		return
+	}
+
+	proofFile := ap.assetVtxoProofList[0]
+	err := taponark.SubmitProof(ap.round.GenesisPoint, proofFile, &ap.exitUserTapClient)
+	if err != nil {
+		log.Printf("Error uploading proof: %v", err)
+		log.Println("-------------------------------------")
+		return
+	}
+
+	ap.assetVtxoProofList = ap.assetVtxoProofList[1:]
+	log.Println("Proof Uploaded")
+	log.Println("------------------------------------------------")
 }

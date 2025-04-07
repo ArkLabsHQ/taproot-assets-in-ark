@@ -55,28 +55,20 @@ func processInput(input string, app *App) {
 	switch input {
 	case "board":
 		app.Board()
-		log.Println("Boarding User Complete")
-		log.Println("------------------------------------------------")
 	case "round":
 		app.ConstructRound()
-		log.Println("Round Construction Complete")
-		log.Println("------------------------------------------------")
-	case "upload":
-		app.UploadProofs()
-		log.Println("Exit Transactions Broadcasted and Proofs Uploaded")
-		log.Println("------------------------------------------------")
-	case "vtxos":
-		app.ShowVtxos()
+	case "unilateral":
+		app.ExitRound()
+	case "tree":
+		app.ShowRoundTree()
 	case "balance":
 		app.ShowBalance()
 	case "mint":
 		app.Mint()
-		log.Println("Minting Complete")
-		log.Println("------------------------------------------------")
 	case "deposit":
 		app.FundOnboarding()
-		log.Println("Deposit Address Gotten")
-		log.Println("------------------------------------------------")
+	case "upload":
+		app.UploadTokenVtxoProof()
 
 	default:
 		log.Println("unknown command")

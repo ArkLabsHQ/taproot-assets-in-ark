@@ -802,7 +802,7 @@ func insertAssetInputInPacket(vPkt *tappsbt.VPacket, idx int,
 }
 
 func createAndSetInputIntermediate(vPkt *tappsbt.VPacket,
-	roundDetails ChainTransfer, assetId []byte) error {
+	roundDetails ColoredTransfer, assetId []byte) error {
 
 	// At this point, we have a valid "coin" to spend in the commitment, so
 	// we'll add the relevant information to the virtual TX's input.

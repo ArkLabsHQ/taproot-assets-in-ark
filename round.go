@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log"
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/lightninglabs/taproot-assets/asset"
@@ -14,9 +15,10 @@ import (
 )
 
 type Round struct {
-	roundTransfer          ChainTransfer
-	roundTree              RoundTree
+	roundTransfer          ColoredTransfer
+	RoundTree              RoundTree
 	assetTransferProofFile []byte
+	GenesisPoint           string
 }
 
 func ConstructAndBroadcastRound(assetId []byte, onboardTransfer ArkBoardingTransfer, user, server *TapClient, bitcoinClient BitcoinClient) (Round, error) {
@@ -94,14 +96,17 @@ func ConstructAndBroadcastRound(assetId []byte, onboardTransfer ArkBoardingTrans
 		return Round{}, fmt.Errorf("failed to finalise Psbt %v", err)
 	}
 
-	roundTransfer, err := DeriveUnpublishedChainTransfer(transferPsbt, assetTransferPktList[0].Outputs[0])
+	roundTransfer, err := ExtractColoredTransfer(transferPsbt, assetTransferPktList[0].Outputs[0])
+	if err != nil {
+		return Round{}, fmt.Errorf("cannot Derive Unpublished Chain Transfer %v", err)
+	}
 
 	// Insert Control Block
 	btcControlBlock := extractControlBlock(roundSpendingDetails.arkBtcScript, roundTransfer.taprootAssetRoot)
 	roundSpendingDetails.arkBtcScript.controlBlock = btcControlBlock
 
 	// construct a two level roundtree
-	roundTree, err := ConstructRoundTree(roundTransfer, assetId, user, server, 2)
+	roundTree, err := ConstructRoundTree(roundTransfer, roundSpendingDetails, assetId, user, server, 2)
 	if err != nil {
 		return Round{}, fmt.Errorf("cannot construct round tree, %v", err)
 	}
@@ -116,17 +121,20 @@ func ConstructAndBroadcastRound(assetId []byte, onboardTransfer ArkBoardingTrans
 		return Round{}, fmt.Errorf("failed to update round proof %v", err)
 	}
 
-	//TODO: Log Properly
-	//log.Printf("\nRound Transaction Hash %s", roundRootTransfer.finalTx.TxHash().String())
+	genesisPoint := onboardTransfer.AssetTransferDetails.GenesisPoint
+
+	log.Printf("\nRound Transaction Hash %s", roundTransfer.finalTx.TxHash().String())
 
 	return Round{
 		roundTransfer,
 		roundTree,
 		rootProofFile,
+		genesisPoint,
 	}, nil
 }
 
-func ExitRoundAndAppendProof(round Round, bitcoinClient *BitcoinClient) error {
+func ExitRoundAndAppendProof(round Round, bitcoinClient *BitcoinClient) ([][]byte, error) {
+	assetVtxoProofList := make([][]byte, 0)
 
 	var traverseRecursively func(node *RoundTreeNode, parentProofFile []byte) error
 
@@ -136,28 +144,51 @@ func ExitRoundAndAppendProof(round Round, bitcoinClient *BitcoinClient) error {
 			return fmt.Errorf("failed to broadcast exit  transaction: %w", err)
 		}
 
-		assetProofFile, err := AppendProof(parentProofFile, node.Transaction, node.LeftOutput.AssetProof, sendTransactionResult)
-		if err != nil {
-			return fmt.Errorf("failed to update asset transfer proof: %w", err)
-		}
-
 		if node.NodeType == NodeTypeLeaf {
-			node.LeftOutput.AssetProofFile = assetProofFile
+			for _, output := range []NodeOutput{node.LeftOutput, node.RightOutput} {
+				if output.OutputType == OutputTypeAsset {
+					if parentProofFile == nil {
+						return fmt.Errorf("parent proof file is nil for leaf node")
+					}
+					assetProofFile, err := AppendProof(parentProofFile, node.Transaction, output.AssetProof, sendTransactionResult)
+					if err != nil {
+						return err
+					}
+					assetVtxoProofList = append(assetVtxoProofList, assetProofFile)
+				}
+			}
 			return nil
 		}
+		for _, output := range []NodeOutput{node.LeftOutput, node.RightOutput} {
+			if output.OutputType == OutputTypeColored {
+				if parentProofFile == nil {
+					return fmt.Errorf("parent proof file is nil for leaf node")
+				}
+				assetProofFile, err := AppendProof(parentProofFile, node.Transaction, output.AssetProof, sendTransactionResult)
+				if err != nil {
+					return err
+				}
+				err = traverseRecursively(output.Node, assetProofFile)
+				if err != nil {
+					return fmt.Errorf("failed to traverse branch transaction: %w", err)
+				}
+			} else {
+				err = traverseRecursively(output.Node, nil)
+				if err != nil {
+					return fmt.Errorf("failed to traverse branch transaction: %w", err)
+				}
+			}
 
-		err = traverseRecursively(node.LeftChild, assetProofFile)
-		if err != nil {
-			return fmt.Errorf("failed to traverse left branch: %w", err)
-		}
-		err = traverseRecursively(node.RightChild, assetProofFile)
-		if err != nil {
-			return fmt.Errorf("failed to traverse Right branch: %w", err)
 		}
 		return nil
 
 	}
 
-	return traverseRecursively(round.roundTree.Root, round.assetTransferProofFile)
+	err := traverseRecursively(round.RoundTree.Root, round.assetTransferProofFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to traverse round tree: %w", err)
+	}
+
+	return assetVtxoProofList, nil
 
 }

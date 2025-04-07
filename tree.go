@@ -51,39 +51,94 @@ type RoundTreeNode struct {
 	Transaction *wire.MsgTx
 	LeftOutput  NodeOutput
 	RightOutput NodeOutput
-	LeftChild   *RoundTreeNode
-	RightChild  *RoundTreeNode
 }
 
 // NodeOutput represents the output associated with a node.
 type NodeOutput struct {
-	OutputType     OutputType
-	AssetAmount    uint64
-	AssetProof     *proof.Proof
-	AssetProofFile []byte
-	BTCAmount      int64
+	OutputType  OutputType
+	AssetAmount uint64
+	AssetProof  *proof.Proof
+	BTCAmount   int64
+	Node        *RoundTreeNode
 }
 
-func ConstructRoundTree(roundTransfer ChainTransfer, assetId []byte, user, server *TapClient, level uint64) (RoundTree, error) {
-	var rootNode RoundTreeNode
+// Access left child
+func (n *RoundTreeNode) LeftChild() *RoundTreeNode {
+	return n.LeftOutput.Node
+}
 
-	roundRootSpendingDetails, err := CreateRoundSpendingDetails(user, server)
-	if err != nil {
-		return RoundTree{}, fmt.Errorf("cannot create Round Spending Details %v", err)
+// Access right child
+func (n *RoundTreeNode) RightChild() *RoundTreeNode {
+	return n.RightOutput.Node
+}
+
+// Display content depending if branch or leaf
+func (n *RoundTreeNode) Display() string {
+	txid := n.Transaction.TxHash().String()
+
+	if n.NodeType == NodeTypeLeaf {
+		vtxoDisplay := make([]string, 2)
+		for index, output := range []NodeOutput{n.LeftOutput, n.RightOutput} {
+			if output.OutputType == OutputTypeAsset {
+				vtxoDisplay[index] = fmt.Sprintf("Token Vtxo [%d]", output.AssetAmount)
+			} else {
+				vtxoDisplay[index] = fmt.Sprintf("BTC Vtxo [%d]", output.BTCAmount)
+			}
+		}
+		return fmt.Sprintf("(%s, %s, %s)", txid, vtxoDisplay[0], vtxoDisplay[1])
 	}
 
-	err = constructBranch(assetId, true, roundRootSpendingDetails, roundTransfer, level-1, user, server, &rootNode)
+	totalAsset := n.LeftOutput.AssetAmount + n.RightOutput.AssetAmount
+	totalBTC := n.LeftOutput.BTCAmount + n.RightOutput.BTCAmount
+	return fmt.Sprintf("(%s, Token %d, BTC %d)", txid, totalAsset, totalBTC)
+
+}
+
+func PrintTree(node *RoundTreeNode, prefix string, isTail bool) {
+	if node == nil {
+		return
+	}
+
+	// Print current node
+	fmt.Println(prefix + "└── " + node.Display())
+
+	// Collect children
+	children := []*RoundTreeNode{}
+	if node.LeftChild() != nil {
+		children = append(children, node.LeftChild())
+	}
+	if node.RightChild() != nil {
+		children = append(children, node.RightChild())
+	}
+
+	// Recursively print children
+	for i, child := range children {
+		isLast := i == len(children)-1
+		newPrefix := prefix
+		if isTail {
+			newPrefix += "    "
+		} else {
+			newPrefix += "│   "
+		}
+		PrintTree(child, newPrefix, isLast)
+	}
+}
+
+func ConstructRoundTree(roundTransfer ColoredTransfer, roundSpendingDetails ArkSpendingDetails, assetId []byte, user, server *TapClient, level uint64) (RoundTree, error) {
+	var rootNode *RoundTreeNode
+
+	err := constructBranch(assetId, true, roundSpendingDetails, roundTransfer, level-1, user, server, &rootNode)
 	if err != nil {
 		return RoundTree{}, fmt.Errorf("failed to construct branch: %v", err)
 	}
 
-	return RoundTree{&rootNode}, nil
+	return RoundTree{rootNode}, nil
 
 }
 
-func constructBranch(assetId []byte, isLeft bool, inputSpendingDetails ArkSpendingDetails, inputChainTransfer ChainTransfer, level uint64, user, server *TapClient, parentNode *RoundTreeNode) error {
+func constructBranch(assetId []byte, isLeft bool, inputSpendingDetails ArkSpendingDetails, prevColoredTransfer ColoredTransfer, level uint64, user, server *TapClient, parentNode **RoundTreeNode) error {
 	if level == 0 {
-		return constructLeaf(assetId, isLeft, inputSpendingDetails, inputChainTransfer, user, server, parentNode)
+		return constructLeaf(assetId, isLeft, inputSpendingDetails, prevColoredTransfer, user, server, parentNode)
 	}
 
 	leftOutputSpendingDetails, err := CreateRoundSpendingDetails(user, server)
@@ -96,8 +151,8 @@ func constructBranch(assetId []byte, isLeft bool, inputSpendingDetails ArkSpendi
 		return fmt.Errorf("failed to create Right output Spending Details %v", err)
 	}
 
-	branchBtcAmount := (inputChainTransfer.anchorValue - int64(FEE)) / 2 // Fee
-	branchAssetAmount := inputChainTransfer.assetAmount / 2
+	branchBtcAmount := (prevColoredTransfer.anchorValue - int64(FEE)) / 2 // Fee
+	branchAssetAmount := prevColoredTransfer.assetAmount / 2
 
 	fundedPkt := tappsbt.ForInteractiveSend(asset.ID(assetId), branchAssetAmount, leftOutputSpendingDetails.arkAssetScript.tapScriptKey, 0, 0, 0,
 		keychain.KeyDescriptor{
@@ -116,7 +171,7 @@ func constructBranch(assetId []byte, isLeft bool, inputSpendingDetails ArkSpendi
 	fundedPkt.Outputs[1].AnchorOutputTapscriptSibling = &rightBranchScriptBranchPreimage
 
 	// Note: This add input details
-	createAndSetInputIntermediate(fundedPkt, inputChainTransfer, assetId)
+	createAndSetInputIntermediate(fundedPkt, prevColoredTransfer, assetId)
 	// Note: This add output details
 	err = tapsend.PrepareOutputAssets(context.TODO(), fundedPkt)
 	if err != nil {
@@ -164,14 +219,14 @@ func constructBranch(assetId []byte, isLeft bool, inputSpendingDetails ArkSpendi
 	}
 
 	// derive Left and Right Unpublished Transfers
-	leftUnpublishedTransfer, err := DeriveUnpublishedChainTransfer(transferBtcPkt, vPackets[0].Outputs[0])
+	leftUnpublishedTransfer, err := ExtractColoredTransfer(transferBtcPkt, vPackets[0].Outputs[0])
 	if err != nil {
-		return fmt.Errorf("cannot derive Unpublished Chain Transfer %v", err)
+		return fmt.Errorf("cannot derive left Output Colored Transfer %v", err)
 	}
 
-	rightUnpublishedTransfer, err := DeriveUnpublishedChainTransfer(transferBtcPkt, vPackets[0].Outputs[1])
+	rightUnpublishedTransfer, err := ExtractColoredTransfer(transferBtcPkt, vPackets[0].Outputs[1])
 	if err != nil {
-		return fmt.Errorf("cannot derive Unpublished Chain Transfer %v", err)
+		return fmt.Errorf("cannot derive right Output Colored Transfer %v", err)
 	}
 
 	// derive Left and Right Control Blocks
@@ -182,49 +237,49 @@ func constructBranch(assetId []byte, isLeft bool, inputSpendingDetails ArkSpendi
 	leftOutput := NodeOutput{OutputType: OutputTypeColored, AssetProof: leftUnpublishedTransfer.transferProof, BTCAmount: branchBtcAmount, AssetAmount: branchAssetAmount}
 	rightOutput := NodeOutput{OutputType: OutputTypeColored, AssetProof: rightUnpublishedTransfer.transferProof, BTCAmount: branchBtcAmount, AssetAmount: branchAssetAmount}
 
-	branchNode := RoundTreeNode{
+	branchNode := &RoundTreeNode{
 		NodeType:    NodeTypeBranch,
 		Transaction: leftUnpublishedTransfer.finalTx,
 		LeftOutput:  leftOutput,
 		RightOutput: rightOutput,
 	}
 
-	if parentNode == nil {
-		parentNode = &branchNode
+	if *parentNode == nil {
+		*parentNode = branchNode
 	} else if isLeft {
-		parentNode.LeftChild = &branchNode
+		(*parentNode).LeftOutput.Node = branchNode
 	} else {
-		parentNode.LeftChild = &branchNode
+		(*parentNode).RightOutput.Node = branchNode
 	}
 
 	leftOutputSpendingDetails.arkBtcScript.controlBlock = leftBtcControlBlock
 	rightOutputSpendingDetail.arkBtcScript.controlBlock = rightBtcControlBlock
 
 	// Recursively create the next level of transfers
-	err = constructBranch(assetId, true, leftOutputSpendingDetails, leftUnpublishedTransfer, level-1, user, server, parentNode)
+	err = constructBranch(assetId, true, leftOutputSpendingDetails, leftUnpublishedTransfer, level-1, user, server, &branchNode)
 	if err != nil {
-		return fmt.Errorf("cannot create Intermediate Chain Transfer %v", err)
+		return fmt.Errorf("cannot construct Left Branch Transaction %v", err)
 	}
 
-	err = constructBranch(assetId, false, rightOutputSpendingDetail, rightUnpublishedTransfer, level-1, user, server, parentNode)
+	err = constructBranch(assetId, false, rightOutputSpendingDetail, rightUnpublishedTransfer, level-1, user, server, &branchNode)
 	if err != nil {
-		return fmt.Errorf("cannot create Intermediate Chain Transfer %v", err)
+		return fmt.Errorf("cannot construct Right Branch Transaction %v", err)
 	}
 
 	return nil
 }
 
-func constructLeaf(assetId []byte, isLeft bool, inputSpendingDetails ArkSpendingDetails, inputChainTransfer ChainTransfer, user, server *TapClient, parentNode *RoundTreeNode) error {
+func constructLeaf(assetId []byte, isLeft bool, inputSpendingDetails ArkSpendingDetails, prevColoredTransfer ColoredTransfer, user, server *TapClient, parentNode **RoundTreeNode) error {
 	assetOutputIndex := 0
 	changeAssetInBtc := DUMMY_ASSET_BTC_AMOUNT
-	btcAmount := inputChainTransfer.anchorValue - int64(changeAssetInBtc) - int64(FEE)
-	// TODO (Joshua Kindly Improve to only have two output)
+	btcAmount := prevColoredTransfer.anchorValue - int64(changeAssetInBtc) - int64(FEE)
+
 	scriptKey, internalKey, err := user.GetNextKeys()
 	if err != nil {
 		return fmt.Errorf("can get next keys %v", err)
 	}
 
-	fundedPkt := tappsbt.ForInteractiveSend(asset.ID(assetId), inputChainTransfer.assetAmount, scriptKey, 0, 0, 0,
+	fundedPkt := tappsbt.ForInteractiveSend(asset.ID(assetId), prevColoredTransfer.assetAmount, scriptKey, 0, 0, 0,
 		internalKey, asset.V0, &server.tapParams)
 
 	fundedPkt.Outputs[0].Type = tappsbt.TypeSimple
@@ -240,7 +295,7 @@ func constructLeaf(assetId []byte, isLeft bool, inputSpendingDetails ArkSpending
 	}
 
 	// Note: This add input details
-	createAndSetInputIntermediate(fundedPkt, inputChainTransfer, assetId)
+	createAndSetInputIntermediate(fundedPkt, prevColoredTransfer, assetId)
 
 	// Note: This add output details
 	err = tapsend.PrepareOutputAssets(context.TODO(), fundedPkt)
@@ -281,15 +336,15 @@ func constructLeaf(assetId []byte, isLeft bool, inputSpendingDetails ArkSpending
 	// Finalise PSBT
 	err = psbt.MaybeFinalizeAll(transferBtcPkt)
 	if err != nil {
-		return fmt.Errorf("failed to finaliste Psbt %v", err)
+		return fmt.Errorf("failed to finalise Psbt %v", err)
 	}
 
 	// derive Asset Unpublished Transfers
-	unpublishedTransfer, err := DeriveUnpublishedChainTransfer(transferBtcPkt, vPackets[0].Outputs[assetOutputIndex])
+	unpublishedTransfer, err := ExtractColoredTransfer(transferBtcPkt, vPackets[0].Outputs[assetOutputIndex])
 	if err != nil {
-		return fmt.Errorf("cannot derive Unpublished Chain Transfer %v", err)
+		return fmt.Errorf("cannot Extract Colored Transfer %v", err)
 	}
-	assetVtxo := NodeOutput{OutputType: OutputTypeAsset, AssetProof: unpublishedTransfer.transferProof, AssetAmount: inputChainTransfer.assetAmount}
+	assetVtxo := NodeOutput{OutputType: OutputTypeAsset, AssetProof: unpublishedTransfer.transferProof, AssetAmount: prevColoredTransfer.assetAmount}
 	btcVtxo := NodeOutput{OutputType: OutputTypeBTC, BTCAmount: btcAmount}
 	leafNode := RoundTreeNode{
 		Transaction: unpublishedTransfer.finalTx,
@@ -299,9 +354,9 @@ func constructLeaf(assetId []byte, isLeft bool, inputSpendingDetails ArkSpending
 	}
 
 	if isLeft {
-		parentNode.LeftChild = &leafNode
+		(*parentNode).LeftOutput.Node = &leafNode
 	} else {
-		parentNode.RightChild = &leafNode
+		(*parentNode).RightOutput.Node = &leafNode
 	}
 
 	return nil

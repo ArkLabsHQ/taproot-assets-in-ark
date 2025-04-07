@@ -29,7 +29,7 @@ This PoC is intended for research and prototyping purposes only.
 
     ```yaml
     bitcoin_client:
-      host: "bitcoind.mutinynet.arkade.sh"    # Replace with your Bitcoin node's hostname or IP
+      host: "localhost"    # Replace with your Bitcoin node's hostname or IP
       port: "18443"                           # Ensure this is the correct port for your setup
       user: "ceiwHEbqWI83"                    # Update with your RPC username
       password: "DwubwWsoo3"                  # Update with your RPC password
@@ -172,41 +172,37 @@ Within the REPL, you can issue commands to interact with the Taproot Assets and 
   2025/03/31 16:12:21 ------------------------------------------------
   ```
 
-- **View vtxos and intermediate transactions:**
+- **View Round Ark Tree:**
 
   ```bash
-  >> vtxos
-  2025/03/31 16:19:07 ------Intermediate Transaction-----
-  2025/03/31 16:19:07 Left Output:  Asset Amount = 20, Btc Amount = 40500
-  2025/03/31 16:19:07 Right Output:  Asset Amount = 20, Btc Amount = 40500
-  2025/03/31 16:19:07 
-  Transaction Hash: 557c63c1916b3baed543d6ed3b423f31d90b8a515b77561ffb54d7995c8819ff
-  2025/03/31 16:19:07 -------------------------------------
-  2025/03/31 16:19:07 ------Left Leaf Transaction-----
-  2025/03/31 16:19:07 Left Output:  Asset Amount = 20
-  2025/03/31 16:19:07 Right Output: Btc Amount = 29500
-  2025/03/31 16:19:07 
-  Transaction Hash: b1c6baac2a58b563fa4dd91a68dfe323120fde246a8175f581ec29c31ca4c2b4
-  2025/03/31 16:19:07 -------------------------------------
-  2025/03/31 16:19:07 ------Right Leaf Transaction-----
-  2025/03/31 16:19:07 Left Output:  Asset Amount = 20
-  2025/03/31 16:19:07 Right Output: Btc Amount = 29500
-  2025/03/31 16:19:07 
-  Transaction Hash: 59e97f3ddc105eaa44214d5e2b128d975a1dee6ab07458602e70a80af976384a
-  2025/03/31 16:19:07 -------------------------------------
+   >> tree
+  └── (cd69bc566a08eb050c009f082db1d6341879e75806020393920f3c957aa534da, Token 40, BTC 81000)
+      └── (75cd6dc683f41712c2638c4006e66295e4d010c4f042aefda65166beee9ff935, Token Vtxo [20], BTC Vtxo [29500])
+      └── (3983764f11e999d957e2575a82916405714cc4757468cadede1e1c5d11fc7672, Token Vtxo [20], BTC Vtxo [29500])
+  2025/04/07 17:11:03 Print Of Round Complete
+  2025/04/07 17:11:03 ------------------------------------------------
     ```
 
- - **Publish Exit Transactions and Upload Asset Proofs to Exit User:**
+ - **Unilaterally Exit Ark Round:**
   ```bash
-  >> upload
+  >> unilateral
   2025/03/31 16:29:11 awaiting confirmation
   2025/03/31 16:29:21 awaiting confirmation
   2025/03/31 16:29:51 awaiting confirmation
   2025/03/31 16:30:21 Exit Proof appended
   2025/03/31 16:30:21 Exit Proof Imported
-  2025/03/31 16:30:21 Exit Transactions Broadcasted and Proofs Uploaded
+  2025/03/31 16:30:21 Exit Transactions Broadcasted and Token Transfer Proof Appended
   2025/03/31 16:30:21 ------------------------------------------------
   ```
+
+  - **Publish the Token Transfer Proof to Ensure the Balance is Updated in Tapd:**
+  ```bash
+  >> upload
+  2025/04/07 17:20:15 Proof Uploaded
+  2025/04/07 17:20:15
+  -----------------------------------------------
+  ```
+  __Note:__ : upload command should be called twice to send both **20 token** transfer proofs to Tapd.
  
  - **Exit The Repl**
   ```bash
@@ -230,6 +226,7 @@ taponark/
 ├── boarding.go           # Contains the construction and broadcastiong  of BTC boarding transaction and Asset          │                           Boarding Transaction
 ├── round.go              # Contains Logic to construct round, round tree offchain transactions and broadcast the round │                           transaction
 ├── proof.go              # Contains Logic to update asset transfer proofs and to publish such transfer proofs to tapd
+├── tree.go               # Contains Logic to create Ark Round Tree 
 ├── bcoin.go              # Bitcoind specific RPC interaction logic  
 ├── lnd.go                # Lnd specific GRPC interaction logic
 ├── tap.go                # Tapd specific GRPC interaction logic
