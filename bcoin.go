@@ -71,7 +71,7 @@ func (b BitcoinClient) SendTransaction(transaction *wire.MsgTx) (BitcoinSendTxRe
 		return BitcoinSendTxResult{}, fmt.Errorf("cannot send raw transaction %v", err)
 	}
 
-	log.Println("awaiting confirmation")
+	log.Printf("awaiting confirmation for tx: %s", txhash.String())
 
 	var bitcoinSendResult BitcoinSendTxResult
 
