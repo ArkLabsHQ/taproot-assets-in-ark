@@ -101,7 +101,7 @@ end
   - Both Asset and Bitcoin are split equally between transaction outputs
   - Fees are excluded from Transaction flow, but a fee of **10_000 sats** is included in all transactions
     
-[Screencast from 08-04-2025 18:12:14.webm](https://github.com/user-attachments/assets/3afe6f84-65f4-4eed-9c3e-24471046ad5e)
+[Proof Of Concept Demo Video](https://github.com/user-attachments/assets/3afe6f84-65f4-4eed-9c3e-24471046ad5e)
 ## 🛠 REPL Usage
 
 Within the REPL, you can issue commands to interact with the Taproot Assets and Ark Protocol. Some example commands include:
