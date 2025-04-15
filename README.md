@@ -1,13 +1,14 @@
-# Ark-Taproot-Asset PoC 🔗  
+# Taproot Assets in Ark
 *A Proof of Concept for Integrating Taproot Assets with the Ark Protocol*
-
----
 
 ## 🧠 Overview
 
 **Ark-Taproot PoC** is an proof of concept CLI App that demonstrates how **Taproot Assets** can be integrated into the **Ark Protocol**. The project uses a local Docker network (configured externally) to simulate interactions with a Taproot Assets daemon (`tapd`) and a Bitcoin node. The primary interface is an interactive REPL where you can issue commands to deposit btc, mint assets,  onboard asset and btc, view asset and btc balance, amongst others.
 
 This PoC is intended for research and prototyping purposes only.
+
+[Proof Of Concept Demo Video](https://github.com/user-attachments/assets/18552907-f857-4214-b8c9-3a0a09fc9db0)
+
 
 ---
 
@@ -16,8 +17,8 @@ This PoC is intended for research and prototyping purposes only.
 1. **Clone the Repository:**
 
    ```bash
-   git clone https://github.com/yourusername/ark-taproot-poc.git
-   cd ark-taproot-poc
+   git clone https://github.com/ArkLabsHQ/taproot-assets-in-ark.git
+   cd taproot-assets-in-ark
    ```
 
 2. **Configure Network And Run :**
@@ -101,7 +102,6 @@ end
   - Both Asset and Bitcoin are split equally between transaction outputs
   - Fees are excluded from Transaction flow, but a fee of **10_000 sats** is included in all transactions
     
-[Proof Of Concept Demo Video](https://github.com/user-attachments/assets/18552907-f857-4214-b8c9-3a0a09fc9db0)
 ## 🛠 REPL Usage
 
 Within the REPL, you can issue commands to interact with the Taproot Assets and Ark Protocol. Some example commands include:
